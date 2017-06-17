@@ -536,6 +536,7 @@ def launch_cluster(conn, opts, cluster_name):
         master_group.authorize('udp', 4242, 4242, authorized_address)
         # RM in YARN mode uses 8088
         master_group.authorize('tcp', 8088, 8088, authorized_address)
+        master_group.authorize('tcp', 8000, 8000, authorized_address)
         if opts.ganglia:
             master_group.authorize('tcp', 5080, 5080, authorized_address)
     if slave_group.rules == []:  # Group was just now created
@@ -810,8 +811,7 @@ def setup_cluster(conn, master_nodes, slave_nodes, opts, deploy_ssh_key):
             print(slave_address)
             ssh_write(slave_address, opts, ['tar', 'x'], dot_ssh_tar)
 
-    modules = ['spark', 'ephemeral-hdfs', 'persistent-hdfs',
-               'mapreduce', 'spark-standalone', 'tachyon', 'rstudio']
+    modules = ['spark', 'task']
 
     if opts.hadoop_major_version == "1":
         modules = list(filter(lambda x: x != "mapreduce", modules))
