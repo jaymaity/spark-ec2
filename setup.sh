@@ -119,4 +119,6 @@ for module in $MODULES; do
 
 done
 
+/root/spark/bin/spark-submit --master $MASTERS /root/task/test_sample_spark.py 
+
 popd > /dev/null
