@@ -112,6 +112,11 @@ for module in $MODULES; do
   module_setup_end_time="$(date +'%s')"
   echo_time_diff "$module setup" "$module_setup_start_time" "$module_setup_end_time"
   cd /root/spark-ec2  # guard against setup.sh changing the cwd
+  echo "--------------------------------------------------"
+  echo "$module is set up................................"
+  echo "$MASTERS"
+  echo "--------------------------------------------------"
+
 done
 
 popd > /dev/null

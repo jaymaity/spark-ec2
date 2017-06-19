@@ -7,7 +7,7 @@ import sys
 
 
 JOB_NAME = "Test Spark JOB"
-SOURCE_PROGRAM_PATH = "http://192.168.205.44:8000/a.out"
+SOURCE_PROGRAM_PATH = "https://s3.ca-central-1.amazonaws.com/cmpt733jay/a.out"
 TEMP_PATH = "/tmp/a.out"
 LOAD_COUNT = 8
 
