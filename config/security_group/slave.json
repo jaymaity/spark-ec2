@@ -1,0 +1,8 @@
+[
+  {"ip_protocol":"tcp", "from_port":22, "to_port":22, "for_app":"ssh"},
+  {"ip_protocol":"tcp", "from_port":8080, "to_port":8081, "for_app":"spark"},
+  {"ip_protocol":"tcp", "from_port":50060, "to_port":50060, "for_app":"spark"},
+  {"ip_protocol":"tcp", "from_port":50075, "to_port":50075, "for_app":"spark"},
+  {"ip_protocol":"tcp", "from_port":60060, "to_port":60060, "for_app":"spark"},
+  {"ip_protocol":"tcp", "from_port":60075, "to_port":60075, "for_app":"spark"}
+]

@@ -1,5 +1,6 @@
 from sys import stderr
 
+
 # Source: http://aws.amazon.com/amazon-linux-ami/instance-type-matrix/
 # Last Updated: 2015-06-19
 # For easy maintainability, please keep this manually-inputted dictionary sorted by key.

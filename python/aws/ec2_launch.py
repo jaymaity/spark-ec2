@@ -5,8 +5,10 @@ import string
 import sys
 import time
 from sys import stderr
-import python.lib.security_group as sg_grp
-import python.lib.aws_config as aws_config
+import python.aws.security_group as sg_grp
+import python.aws.config as aws_config
+import python.aws.common as aws_common
+
 
 from boto.ec2.blockdevicemapping import BlockDeviceMapping, BlockDeviceType, EBSBlockDeviceType
 
@@ -16,9 +18,14 @@ class EC2Launch(object):
     Responsible for launching EC2 instances
     """
 
-    def __init__(self, conn, opts):
+    def __init__(self, conn, opts, master_group, slave_group, additional_group_ids):
         self.conn = conn
         self.opts = opts
+        self.__master_group = master_group
+        self.__slave_group = slave_group
+        self.__additional_group_id = additional_group_ids
+        self.__block_map = self.__create_block_device_map()
+        self.__user_data = self.__get_user_data_content()
 
     def get_image_from_ami(self, ami):
         """
@@ -33,15 +40,21 @@ class EC2Launch(object):
             sys.exit(1)
         return image
 
+    def __get_user_data_content(self):
+        user_data_content = None
+        if self.opts.user_data:
+            with open(self.opts.user_data) as user_data_file:
+                user_data_content = user_data_file.read()
+        return user_data_content
+
     def __create_block_device_map(self):
         """
         Create block device mapping so that we can add EBS volumes if asked to.
         The first drive is attached as /dev/sds, 2nd as /dev/sdt, ... /dev/sdz
-        :param opts:
         :return:
         """
         block_map = BlockDeviceMapping()
-        if opts.ebs_vol_size > 0:
+        if self.opts.ebs_vol_size > 0:
             for i in range(self.opts.ebs_vol_num):
                 device = EBSBlockDeviceType()
                 device.size = self.opts.ebs_vol_size
@@ -50,7 +63,7 @@ class EC2Launch(object):
                 block_map["/dev/sd" + chr(ord('s') + i)] = device
 
         # AWS ignores the AMI-specified block device mapping for M3 (see SPARK-3342).
-        if opts.instance_type.startswith('m3.'):
+        if self.opts.instance_type.startswith('m3.'):
             for i in range(aws_config.get_num_disks(self.opts.instance_type)):
                 dev = BlockDeviceType()
                 dev.ephemeral_name = 'ephemeral%d' % i
@@ -60,66 +73,65 @@ class EC2Launch(object):
 
         return block_map
 
-
-def __get_all_spot_instances(additional_group_ids, block_map, cluster_name, conn, opts, slave_group, user_data_content):
-    # Launch spot instances with the requested price
-    print("Requesting %d slaves as spot instances with price $%.3f" %
-          (opts.slaves, opts.spot_price))
-    zones = get_zones(conn, opts)
-    num_zones = len(zones)
-    i = 0
-    my_req_ids = []
-    for zone in zones:
-        num_slaves_this_zone = get_partition(opts.slaves, num_zones, i)
-        slave_reqs = conn.request_spot_instances(
-            price=opts.spot_price,
-            image_id=opts.ami,
-            launch_group="launch-group-%s" % cluster_name,
-            placement=zone,
-            count=num_slaves_this_zone,
-            key_name=opts.key_pair,
-            security_group_ids=[slave_group.id] + additional_group_ids,
-            instance_type=opts.instance_type,
-            block_device_map=block_map,
-            subnet_id=opts.subnet_id,
-            placement_group=opts.placement_group,
-            user_data=user_data_content,
-            instance_profile_name=opts.instance_profile_name)
-        my_req_ids += [req.id for req in slave_reqs]
-        i += 1
-    print("Waiting for spot instances to be granted...")
-    try:
-        while True:
-            time.sleep(10)
-            reqs = conn.get_all_spot_instance_requests()
-            id_to_req = {}
-            for r in reqs:
-                id_to_req[r.id] = r
-            active_instance_ids = []
-            for i in my_req_ids:
-                if i in id_to_req and id_to_req[i].state == "active":
-                    active_instance_ids.append(id_to_req[i].instance_id)
-            if len(active_instance_ids) == opts.slaves:
-                print("All %d slaves granted" % opts.slaves)
-                reservations = conn.get_all_reservations(active_instance_ids)
-                slave_nodes = []
-                for r in reservations:
-                    slave_nodes += r.instances
-                break
-            else:
-                print("%d of %d slaves granted, waiting longer" % (
-                    len(active_instance_ids), opts.slaves))
-    except:
-        print("Canceling spot instance requests")
-        conn.cancel_spot_instance_requests(my_req_ids)
-        # Log a warning if any of these requests actually launched instances:
-        (master_nodes, slave_nodes) = get_existing_cluster(
-            conn, opts.region, cluster_name, die_on_error=False)
-        running = len(master_nodes) + len(slave_nodes)
-        if running:
-            print(("WARNING: %d instances are still running" % running), file=stderr)
-        sys.exit(0)
-    return slave_nodes, zone
+    def __get_all_spot_instances(self, cluster_name):
+        # Launch spot instances with the requested price
+        print("Requesting %d slaves as spot instances with price $%.3f" %
+              (self.opts.slaves, self.opts.spot_price))
+        zones = aws_common.get_zones(self.conn, self.opts)
+        num_zones = len(zones)
+        i = 0
+        my_req_ids = []
+        for zone in zones:
+            num_slaves_this_zone = aws_common.get_partition(self.opts.slaves, num_zones, i)
+            slave_reqs = self.conn.request_spot_instances(
+                price=self.opts.spot_price,
+                image_id=self.opts.ami,
+                launch_group="launch-group-%s" % cluster_name,
+                placement=zone,
+                count=num_slaves_this_zone,
+                key_name=self.opts.key_pair,
+                security_group_ids=[self.__slave_group.id] + self.__additional_group_id,
+                instance_type=self.opts.instance_type,
+                block_device_map=self.__block_map,
+                subnet_id=self.opts.subnet_id,
+                placement_group=self.opts.placement_group,
+                user_data=self.__user_data,
+                instance_profile_name=self.opts.instance_profile_name)
+            my_req_ids += [req.id for req in slave_reqs]
+            i += 1
+        print("Waiting for spot instances to be granted...")
+        try:
+            while True:
+                time.sleep(10)
+                reqs = self.conn.get_all_spot_instance_requests()
+                id_to_req = {}
+                for r in reqs:
+                    id_to_req[r.id] = r
+                active_instance_ids = []
+                for i in my_req_ids:
+                    if i in id_to_req and id_to_req[i].state == "active":
+                        active_instance_ids.append(id_to_req[i].instance_id)
+                if len(active_instance_ids) == self.opts.slaves:
+                    print("All %d slaves granted" % self.opts.slaves)
+                    reservations = self.conn.get_all_reservations(active_instance_ids)
+                    slave_nodes = []
+                    for r in reservations:
+                        slave_nodes += r.instances
+                    break
+                else:
+                    print("%d of %d slaves granted, waiting longer" % (
+                        len(active_instance_ids), self.opts.slaves))
+        except:
+            print("Canceling spot instance requests")
+            self.conn.cancel_spot_instance_requests(my_req_ids)
+            # Log a warning if any of these requests actually launched instances:
+            (master_nodes, slave_nodes) = get_existing_cluster(
+                self.conn, self.opts.region, cluster_name, die_on_error=False)
+            running = len(master_nodes) + len(slave_nodes)
+            if running:
+                print(("WARNING: %d instances are still running" % running), file=stderr)
+            sys.exit(0)
+        return slave_nodes, zone
 
 
 def __launch_slaves(additional_group_ids, block_map, cluster_name, conn, image, opts, slave_group, user_data_content):
@@ -136,12 +148,7 @@ def __launch_slaves(additional_group_ids, block_map, cluster_name, conn, image, 
 
 
 
-def __get_user_data_content(opts):
-    user_data_content = None
-    if opts.user_data:
-        with open(opts.user_data) as user_data_file:
-            user_data_content = user_data_file.read()
-    return user_data_content
+
 
 
 def __add_tag_master_slaves(cluster_name, master_nodes, opts, slave_nodes):

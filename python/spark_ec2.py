@@ -31,7 +31,6 @@ import pipes
 import random
 import shutil
 import string
-import json
 from stat import S_IRUSR
 import subprocess
 import sys
@@ -43,6 +42,7 @@ import warnings
 from datetime import datetime
 from optparse import OptionParser
 from sys import stderr
+import python.aws.security_group as sg_grp
 
 if sys.version < "3":
     from urllib2 import urlopen, Request, HTTPError
@@ -111,10 +111,10 @@ DEFAULT_SPARK_EC2_BRANCH = "testec2"
 
 def setup_external_libs(libs):
     """
-    Download external libraries from PyPI to SPARK_EC2_DIR/lib/ and prepend them to our PATH.
+    Download external libraries from PyPI to SPARK_EC2_DIR/aws/ and prepend them to our PATH.
     """
     PYPI_URL_PREFIX = "https://pypi.python.org/packages/source"
-    SPARK_EC2_LIB_DIR = os.path.join(SPARK_EC2_DIR, "lib")
+    SPARK_EC2_LIB_DIR = os.path.join(SPARK_EC2_DIR, "aws")
 
     if not os.path.exists(SPARK_EC2_LIB_DIR):
         print("Downloading external libraries that spark-ec2 needs from PyPI to {path}...".format(
@@ -357,17 +357,6 @@ def parse_args():
     return (opts, action, cluster_name)
 
 
-# Get the EC2 security group of the given name, creating it if it doesn't exist
-def get_or_make_group(conn, name, vpc_id):
-    groups = conn.get_all_security_groups()
-    group = [g for g in groups if g.name == name]
-    if len(group) > 0:
-        return group[0]
-    else:
-        print("Creating security group " + name)
-        return conn.create_security_group(name, "Spark EC2 group", vpc_id)
-
-
 def get_validate_spark_version(version, repo):
     if "." in version:
         version = version.replace("v", "")
@@ -389,73 +378,19 @@ def get_validate_spark_version(version, repo):
         return version
 
 
-# Source: http://aws.amazon.com/amazon-linux-ami/instance-type-matrix/
-# Last Updated: 2015-06-19
-# For easy maintainability, please keep this manually-inputted dictionary sorted by key.
-EC2_INSTANCE_TYPES = {
-    "c1.medium":   "pvm",
-    "c1.xlarge":   "pvm",
-    "c3.large":    "hvm",
-    "c3.xlarge":   "hvm",
-    "c3.2xlarge":  "hvm",
-    "c3.4xlarge":  "hvm",
-    "c3.8xlarge":  "hvm",
-    "c4.large":    "hvm",
-    "c4.xlarge":   "hvm",
-    "c4.2xlarge":  "hvm",
-    "c4.4xlarge":  "hvm",
-    "c4.8xlarge":  "hvm",
-    "cc1.4xlarge": "hvm",
-    "cc2.8xlarge": "hvm",
-    "cg1.4xlarge": "hvm",
-    "cr1.8xlarge": "hvm",
-    "d2.xlarge":   "hvm",
-    "d2.2xlarge":  "hvm",
-    "d2.4xlarge":  "hvm",
-    "d2.8xlarge":  "hvm",
-    "g2.2xlarge":  "hvm",
-    "g2.8xlarge":  "hvm",
-    "hi1.4xlarge": "pvm",
-    "hs1.8xlarge": "pvm",
-    "i2.xlarge":   "hvm",
-    "i2.2xlarge":  "hvm",
-    "i2.4xlarge":  "hvm",
-    "i2.8xlarge":  "hvm",
-    "m1.small":    "pvm",
-    "m1.medium":   "pvm",
-    "m1.large":    "pvm",
-    "m1.xlarge":   "pvm",
-    "m2.xlarge":   "pvm",
-    "m2.2xlarge":  "pvm",
-    "m2.4xlarge":  "pvm",
-    "m3.medium":   "hvm",
-    "m3.large":    "hvm",
-    "m3.xlarge":   "hvm",
-    "m3.2xlarge":  "hvm",
-    "m4.large":    "hvm",
-    "m4.xlarge":   "hvm",
-    "m4.2xlarge":  "hvm",
-    "m4.4xlarge":  "hvm",
-    "m4.10xlarge": "hvm",
-    "r3.large":    "hvm",
-    "r3.xlarge":   "hvm",
-    "r3.2xlarge":  "hvm",
-    "r3.4xlarge":  "hvm",
-    "r3.8xlarge":  "hvm",
-    "t1.micro":    "pvm",
-    "t2.micro":    "hvm",
-    "t2.small":    "hvm",
-    "t2.medium":   "hvm",
-    "t2.large":    "hvm",
-}
+
 
 
 def get_tachyon_version(spark_version):
     return SPARK_TACHYON_MAP.get(spark_version, "")
 
 
-# Attempt to resolve an appropriate AMI given the architecture and region of the request.
 def get_spark_ami(opts):
+    """
+    Attempt to resolve an appropriate AMI given the architecture and region of the request.
+    :param opts:
+    :return:
+    """
     if opts.instance_type in EC2_INSTANCE_TYPES:
         instance_type = EC2_INSTANCE_TYPES[opts.instance_type]
     else:
@@ -479,160 +414,7 @@ def get_spark_ami(opts):
     return ami
 
 
-def __get_master_group_name(cluster_name):
-    return cluster_name + "-master"
-
-
-def __get_slave_group_name(cluster_name):
-    return cluster_name + "-slave"
-
-def __apply_inter_security_group_rules(master_group, slave_group,
-                                       connection_list,
-                                       group_to_apply):
-    """
-    Apply interconnection security rules among master slave interaction
-    :param master_group:
-    :param slave_group:
-    :param connection_list:
-    :param group_to_apply:
-    :return:
-    """
-    master_inter_conn = connection_list[group_to_apply]
-
-    for security_row in master_inter_conn:
-        protocol = security_row["ip_protocol"]
-        port_from = security_row["port_form"]
-        port_to = security_row["port_to"]
-        group_to_authorize = security_row["target"]
-
-        if group_to_authorize == "master":
-            src_group = master_group
-        elif group_to_authorize == "slave":
-            src_group = slave_group
-        else:
-            print("Sorry we do not know where should we apply security group with:\n"
-                  "Protocol: {0}\tStart Port:{1}\tEnd Port:{2}\tSource Type:{3}".
-                  format(protocol, port_from, port_to, group_to_authorize))
-
-        master_group.authorize(ip_protocol=protocol,
-                               from_port=-port_from,
-                               to_port=-port_to,
-                               src_group=src_group)
-
-
-def __apply_individual_security_group_rules(security_group,
-                                 connection_list,
-                                 module_list,
-                                 authorized_address):
-    """
-    Apply security rules within group
-    :param security_group:
-    :param connection_list:
-    :param module_list:
-    :param authorized_address:
-    :return:
-    """
-    for security_row in connection_list:
-        protocol = security_row["ip_protocol"]
-        port_from = security_row["port_form"]
-        port_to = security_row["port_to"]
-        for_app = security_row["for_app"]
-
-        if for_app in module_list:
-            security_group.authorize(protocol, port_from,
-                                     port_to, authorized_address)
-
-
-def __apply_master_group_rules(vpc_id, inter_conn, master_group, slave_group, authorized_address):
-    """
-    Configure and apply all slave group rules
-    :param vpc_id:
-    :param inter_conn:
-    :param master_group:
-    :param slave_group:
-    :return:
-    """
-    if vpc_id is None:
-        master_group.authorize(src_group=master_group)
-        master_group.authorize(src_group=slave_group)
-    else:
-        __apply_inter_security_group_rules(master_group, slave_group, inter_conn, "master")
-
-    fp_master_conn = open("./config/security_group/master.json")
-    master_conn = json.load(fp_master_conn)
-
-    # Apply security group rules in master security group
-    __apply_individual_security_group_rules(master_group, master_conn, modules,
-                                            authorized_address)
-
-
-def __apply_slave_group_rules(vpc_id, inter_conn, master_group, slave_group, authorized_address):
-    """
-    Configure and apply all master group rules
-    :param vpc_id:
-    :param inter_conn:
-    :param master_group:
-    :param slave_group:
-    :return:
-    """
-    if vpc_id is None:
-        slave_group.authorize(src_group=master_group)
-        slave_group.authorize(src_group=slave_group)
-    else:
-        __apply_inter_security_group_rules(master_group, slave_group, inter_conn, "slave")
-
-    fp_master_conn = open("./config/security_group/slave.json")
-    slave_conn = json.load(fp_master_conn)
-
-    # Apply security group rules in master security group
-    __apply_individual_security_group_rules(slave_group, slave_conn, modules,
-                                            authorized_address)
-
-
-def create_apply_security_group_rules(conn, opts, cluster_name,
-                                      existing_masters, existing_slaves):
-    """
-    Creates and apply security groups
-    :param conn:
-    :param opts:
-    :param cluster_name:
-    :return:
-    """
-    # Creates mater and slave security group name
-    master_group = get_or_make_group(conn, __get_master_group_name(cluster_name), opts.vpc_id)
-    slave_group = get_or_make_group(conn, __get_slave_group_name(cluster_name), opts.vpc_id)
-
-    # If there is already some instances running on that security group
-    if existing_slaves or (existing_masters and not opts.use_existing_master):
-        print("ERROR: There are already instances running in group %s or %s" %
-              (master_group.name, slave_group.name), file=stderr)
-        sys.exit(1)
-
-    # Loads inter connection security rules
-    fp_inter_conn = open("./config/security_group/interconn-masterslave.json")
-    inter_conn = json.load(fp_inter_conn)
-
-    if len(master_group.rules) == 0:  # Group was just now created
-        __apply_slave_group_rules(opts.vpc_id, inter_conn, master_group, slave_group, opts.authorized_address)
-
-    if len(slave_group.rules) == 0:  # Group was just now created
-        __apply_master_group_rules(opts.vpc_id, inter_conn, master_group, slave_group, opts.authorized_address)
-
-    # we use group ids to work around https://github.com/boto/boto/issues/350
-    additional_group_ids = []
-    if opts.additional_security_group:
-        additional_group_ids = [sg.id
-                                for sg in conn.get_all_security_groups()
-                                if opts.additional_security_group in (sg.name, sg.id)]
-
-    return master_group, slave_group, additional_group_ids
-
-
-# Launch a cluster of the given name, by setting up its security groups,
-# and then starting new instances in them.
-# Returns a tuple of EC2 reservation objects for the master and slaves
-# Fails if there already instances running in the cluster's groups.
-def launch_cluster(conn, opts, cluster_name):
+def __initialize_launch(conn, opts, cluster_name):
     if opts.identity_file is None:
         print("ERROR: Must provide an identity file (-i) for ssh connections.", file=stderr)
         sys.exit(1)
@@ -640,30 +422,13 @@ def launch_cluster(conn, opts, cluster_name):
     if opts.key_pair is None:
         print("ERROR: Must provide a key pair name (-k) to use on instances.", file=stderr)
         sys.exit(1)
-
-    user_data_content = None
-    if opts.user_data:
-        with open(opts.user_data) as user_data_file:
-            user_data_content = user_data_file.read()
-
-    print("Setting up security groups...")
-    # Get instances are already running in our groups
-    existing_masters, existing_slaves = get_existing_cluster(conn, opts.region, cluster_name,
-                                                             die_on_error=False)
-    master_group, slave_group, additional_group_ids = create_apply_security_group_rules(
-        conn, opts, cluster_name, existing_masters, existing_slaves)
-
-    # Figure out Spark AMI
+        # Figure out Spark AMI
     if opts.ami is None:
         opts.ami = get_spark_ami(opts)
+    return opts
 
-    print("Launching instances...")
-    try:
-        image = conn.get_all_images(image_ids=[opts.ami])[0]
-    except:
-        print("Could not find AMI " + opts.ami, file=stderr)
-        sys.exit(1)
 
+def __create_block_device_map(opts):
     # Create block device mapping so that we can add EBS volumes if asked to.
     # The first drive is attached as /dev/sds, 2nd as /dev/sdt, ... /dev/sdz
     block_map = BlockDeviceMapping()
@@ -684,97 +449,161 @@ def launch_cluster(conn, opts, cluster_name):
             name = '/dev/sd' + string.ascii_letters[i + 1]
             block_map[name] = dev
 
+    return block_map
+
+def __get_all_spot_instances(additional_group_ids, block_map, cluster_name, conn, opts, slave_group, user_data_content):
+    # Launch spot instances with the requested price
+    print("Requesting %d slaves as spot instances with price $%.3f" %
+          (opts.slaves, opts.spot_price))
+    zones = get_zones(conn, opts)
+    num_zones = len(zones)
+    i = 0
+    my_req_ids = []
+    for zone in zones:
+        num_slaves_this_zone = get_partition(opts.slaves, num_zones, i)
+        slave_reqs = conn.request_spot_instances(
+            price=opts.spot_price,
+            image_id=opts.ami,
+            launch_group="launch-group-%s" % cluster_name,
+            placement=zone,
+            count=num_slaves_this_zone,
+            key_name=opts.key_pair,
+            security_group_ids=[slave_group.id] + additional_group_ids,
+            instance_type=opts.instance_type,
+            block_device_map=block_map,
+            subnet_id=opts.subnet_id,
+            placement_group=opts.placement_group,
+            user_data=user_data_content,
+            instance_profile_name=opts.instance_profile_name)
+        my_req_ids += [req.id for req in slave_reqs]
+        i += 1
+    print("Waiting for spot instances to be granted...")
+    try:
+        while True:
+            time.sleep(10)
+            reqs = conn.get_all_spot_instance_requests()
+            id_to_req = {}
+            for r in reqs:
+                id_to_req[r.id] = r
+            active_instance_ids = []
+            for i in my_req_ids:
+                if i in id_to_req and id_to_req[i].state == "active":
+                    active_instance_ids.append(id_to_req[i].instance_id)
+            if len(active_instance_ids) == opts.slaves:
+                print("All %d slaves granted" % opts.slaves)
+                reservations = conn.get_all_reservations(active_instance_ids)
+                slave_nodes = []
+                for r in reservations:
+                    slave_nodes += r.instances
+                break
+            else:
+                print("%d of %d slaves granted, waiting longer" % (
+                    len(active_instance_ids), opts.slaves))
+    except:
+        print("Canceling spot instance requests")
+        conn.cancel_spot_instance_requests(my_req_ids)
+        # Log a warning if any of these requests actually launched instances:
+        (master_nodes, slave_nodes) = get_existing_cluster(
+            conn, opts.region, cluster_name, die_on_error=False)
+        running = len(master_nodes) + len(slave_nodes)
+        if running:
+            print(("WARNING: %d instances are still running" % running), file=stderr)
+        sys.exit(0)
+    return slave_nodes, zone
+
+
+# Launch a cluster of the given name, by setting up its security groups,
+# and then starting new instances in them.
+# Returns a tuple of EC2 reservation objects for the master and slaves
+# Fails if there already instances running in the cluster's groups.
+def launch_cluster(conn, opts, cluster_name):
+
+    opts = __initialize_launch(conn, opts, cluster_name)
+    user_data_content = __get_user_data_content(opts)
+
+    print("Setting up security groups...")
+
+    # Get instances are already running in our groups
+    existing_masters, existing_slaves = get_existing_cluster(conn, opts.region, cluster_name,
+                                                             die_on_error=False)
+    # Configure security groups
+    sg_conn = sg_grp.SecurityGroup(conn, modules, opts, cluster_name)
+    master_group, slave_group, additional_group_ids = \
+        sg_conn.create_apply_security_group_rules(existing_masters, existing_slaves)
+
+    master_nodes, slave_nodes = launch_instances(additional_group_ids, cluster_name, conn, existing_masters,
+                                                 master_group, opts, slave_group, user_data_content)
+
+    # Give the instances descriptive names and set additional tags
+    __add_tag_master_slaves(cluster_name, master_nodes, opts, slave_nodes)
+
+    # Return all the instances
+    return master_nodes, slave_nodes
+
+
+def launch_instances(additional_group_ids, cluster_name, conn, existing_masters, master_group, opts, slave_group,
+                     user_data_content):
+    print("Launching instances...")
+    image = __get_image(conn, opts)
+    block_map = __create_block_device_map(opts)
     # Launch slaves
-    if opts.spot_price is not None:
-        # Launch spot instances with the requested price
-        print("Requesting %d slaves as spot instances with price $%.3f" %
-              (opts.slaves, opts.spot_price))
-        zones = get_zones(conn, opts)
-        num_zones = len(zones)
-        i = 0
-        my_req_ids = []
-        for zone in zones:
-            num_slaves_this_zone = get_partition(opts.slaves, num_zones, i)
-            slave_reqs = conn.request_spot_instances(
-                price=opts.spot_price,
-                image_id=opts.ami,
-                launch_group="launch-group-%s" % cluster_name,
-                placement=zone,
-                count=num_slaves_this_zone,
-                key_name=opts.key_pair,
-                security_group_ids=[slave_group.id] + additional_group_ids,
-                instance_type=opts.instance_type,
-                block_device_map=block_map,
-                subnet_id=opts.subnet_id,
-                placement_group=opts.placement_group,
-                user_data=user_data_content,
-                instance_profile_name=opts.instance_profile_name)
-            my_req_ids += [req.id for req in slave_reqs]
-            i += 1
-
-        print("Waiting for spot instances to be granted...")
-        try:
-            while True:
-                time.sleep(10)
-                reqs = conn.get_all_spot_instance_requests()
-                id_to_req = {}
-                for r in reqs:
-                    id_to_req[r.id] = r
-                active_instance_ids = []
-                for i in my_req_ids:
-                    if i in id_to_req and id_to_req[i].state == "active":
-                        active_instance_ids.append(id_to_req[i].instance_id)
-                if len(active_instance_ids) == opts.slaves:
-                    print("All %d slaves granted" % opts.slaves)
-                    reservations = conn.get_all_reservations(active_instance_ids)
-                    slave_nodes = []
-                    for r in reservations:
-                        slave_nodes += r.instances
-                    break
-                else:
-                    print("%d of %d slaves granted, waiting longer" % (
-                        len(active_instance_ids), opts.slaves))
-        except:
-            print("Canceling spot instance requests")
-            conn.cancel_spot_instance_requests(my_req_ids)
-            # Log a warning if any of these requests actually launched instances:
-            (master_nodes, slave_nodes) = get_existing_cluster(
-                conn, opts.region, cluster_name, die_on_error=False)
-            running = len(master_nodes) + len(slave_nodes)
-            if running:
-                print(("WARNING: %d instances are still running" % running), file=stderr)
-            sys.exit(0)
-    else:
-        # Launch non-spot instances
-        zones = get_zones(conn, opts)
-        num_zones = len(zones)
-        i = 0
-        slave_nodes = []
-        for zone in zones:
-            num_slaves_this_zone = get_partition(opts.slaves, num_zones, i)
-            if num_slaves_this_zone > 0:
-                slave_res = image.run(
-                    key_name=opts.key_pair,
-                    security_group_ids=[slave_group.id] + additional_group_ids,
-                    instance_type=opts.instance_type,
-                    placement=zone,
-                    min_count=num_slaves_this_zone,
-                    max_count=num_slaves_this_zone,
-                    block_device_map=block_map,
-                    subnet_id=opts.subnet_id,
-                    placement_group=opts.placement_group,
-                    user_data=user_data_content,
-                    instance_initiated_shutdown_behavior=opts.instance_initiated_shutdown_behavior,
-                    instance_profile_name=opts.instance_profile_name)
-                slave_nodes += slave_res.instances
-                print("Launched {s} slave{plural_s} in {z}, regid = {r}".format(
-                      s=num_slaves_this_zone,
-                      plural_s=('' if num_slaves_this_zone == 1 else 's'),
-                      z=zone,
-                      r=slave_res.id))
-            i += 1
-
+    slave_nodes, zone = __launch_slaves(additional_group_ids, block_map, cluster_name, conn, image, opts, slave_group,
+                                        user_data_content)
     # Launch or resume masters
+    master_nodes = __launch_or_resume_masters(additional_group_ids, block_map, conn, existing_masters, image,
+                                              master_group, opts, user_data_content, zone)
+    # This wait time corresponds to SPARK-4983
+    print("Waiting for AWS to propagate instance metadata...")
+    time.sleep(15)
+    return master_nodes, slave_nodes
+
+
+def __launch_slaves(additional_group_ids, block_map, cluster_name, conn, image, opts, slave_group, user_data_content):
+    if opts.spot_price is not None:
+        slave_nodes, zone = __get_all_spot_instances(additional_group_ids, block_map, cluster_name, conn, opts,
+                                                     slave_group, user_data_content)
+    else:
+        slave_nodes, zone = __get_non_spot_instances(additional_group_ids, block_map, conn, image, opts, slave_group,
+                                                     user_data_content)
+
+    return slave_nodes, zone
+
+
+def __get_image(conn, opts):
+    try:
+        image = conn.get_all_images(image_ids=[opts.ami])[0]
+    except:
+        print("Could not find AMI " + opts.ami, file=stderr)
+        sys.exit(1)
+    return image
+
+
+def __get_user_data_content(opts):
+    user_data_content = None
+    if opts.user_data:
+        with open(opts.user_data) as user_data_file:
+            user_data_content = user_data_file.read()
+    return user_data_content
+
+
+def __add_tag_master_slaves(cluster_name, master_nodes, opts, slave_nodes):
+    additional_tags = {}
+    if opts.additional_tags.strip():
+        additional_tags = dict(
+            map(str.strip, tag.split(':', 1)) for tag in opts.additional_tags.split(',')
+        )
+    for master in master_nodes:
+        master.add_tags(
+            dict(additional_tags, Name='{cn}-master-{iid}'.format(cn=cluster_name, iid=master.id))
+        )
+    for slave in slave_nodes:
+        slave.add_tags(
+            dict(additional_tags, Name='{cn}-slave-{iid}'.format(cn=cluster_name, iid=slave.id))
+        )
+
+
+def __launch_or_resume_masters(additional_group_ids, block_map, conn, existing_masters, image, master_group, opts,
+                               user_data_content, zone):
     if existing_masters:
         print("Starting master...")
         for inst in existing_masters:
@@ -804,29 +633,40 @@ def launch_cluster(conn, opts, cluster_name):
         master_nodes = master_res.instances
         print("Launched master in %s, regid = %s" % (zone, master_res.id))
 
-    # This wait time corresponds to SPARK-4983
-    print("Waiting for AWS to propagate instance metadata...")
-    time.sleep(15)
+    return master_nodes
 
-    # Give the instances descriptive names and set additional tags
-    additional_tags = {}
-    if opts.additional_tags.strip():
-        additional_tags = dict(
-            map(str.strip, tag.split(':', 1)) for tag in opts.additional_tags.split(',')
-        )
 
-    for master in master_nodes:
-        master.add_tags(
-            dict(additional_tags, Name='{cn}-master-{iid}'.format(cn=cluster_name, iid=master.id))
-        )
+def __get_non_spot_instances(additional_group_ids, block_map, conn, image, opts, slave_group, user_data_content):
+    # Launch non-spot instances
+    zones = get_zones(conn, opts)
+    num_zones = len(zones)
+    i = 0
+    slave_nodes = []
+    for zone in zones:
+        num_slaves_this_zone = get_partition(opts.slaves, num_zones, i)
+        if num_slaves_this_zone > 0:
+            slave_res = image.run(
+                key_name=opts.key_pair,
+                security_group_ids=[slave_group.id] + additional_group_ids,
+                instance_type=opts.instance_type,
+                placement=zone,
+                min_count=num_slaves_this_zone,
+                max_count=num_slaves_this_zone,
+                block_device_map=block_map,
+                subnet_id=opts.subnet_id,
+                placement_group=opts.placement_group,
+                user_data=user_data_content,
+                instance_initiated_shutdown_behavior=opts.instance_initiated_shutdown_behavior,
+                instance_profile_name=opts.instance_profile_name)
+            slave_nodes += slave_res.instances
+            print("Launched {s} slave{plural_s} in {z}, regid = {r}".format(
+                s=num_slaves_this_zone,
+                plural_s=('' if num_slaves_this_zone == 1 else 's'),
+                z=zone,
+                r=slave_res.id))
+        i += 1
 
-    for slave in slave_nodes:
-        slave.add_tags(
-            dict(additional_tags, Name='{cn}-slave-{iid}'.format(cn=cluster_name, iid=slave.id))
-        )
-
-    # Return all the instances
-    return (master_nodes, slave_nodes)
+    return slave_nodes, zone
 
 
 def get_existing_cluster(conn, region_name, cluster_name, die_on_error=True):
@@ -849,8 +689,8 @@ def get_existing_cluster(conn, region_name, cluster_name, die_on_error=True):
         instances = itertools.chain.from_iterable(r.instances for r in reservations)
         return [i for i in instances if i.state not in ["shutting-down", "terminated"]]
 
-    master_instances = get_instances([__get_master_group_name(cluster_name)])
-    slave_instances = get_instances([__get_slave_group_name(cluster_name)])
+    master_instances = get_instances([sg_grp.get_master_group_name(cluster_name)])
+    slave_instances = get_instances([sg_grp.get_slave_group_name(cluster_name)])
 
     if any((master_instances, slave_instances)):
         print("Found {m} master{plural_m}, {s} slave{plural_s}.".format(
@@ -869,6 +709,7 @@ def get_existing_cluster(conn, region_name, cluster_name, die_on_error=True):
 
 modules = ['spark', 'ephemeral-hdfs', 'persistent-hdfs',
            'mapreduce', 'spark-standalone', 'tachyon']
+
 
 # Deploy configuration files and run setup scripts on a newly launched
 # or started EC2 cluster.
@@ -1036,75 +877,6 @@ def wait_for_cluster_state(conn, opts, cluster_instances, cluster_state):
         s=cluster_state,
         t=(end_time - start_time).seconds
     ))
-
-
-# Get number of local disks available for a given EC2 instance type.
-def get_num_disks(instance_type):
-    # Source: http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/InstanceStorage.html
-    # Last Updated: 2015-06-19
-    # For easy maintainability, please keep this manually-inputted dictionary sorted by key.
-    disks_by_instance = {
-        "c1.medium":   1,
-        "c1.xlarge":   4,
-        "c3.large":    2,
-        "c3.xlarge":   2,
-        "c3.2xlarge":  2,
-        "c3.4xlarge":  2,
-        "c3.8xlarge":  2,
-        "c4.large":    0,
-        "c4.xlarge":   0,
-        "c4.2xlarge":  0,
-        "c4.4xlarge":  0,
-        "c4.8xlarge":  0,
-        "cc1.4xlarge": 2,
-        "cc2.8xlarge": 4,
-        "cg1.4xlarge": 2,
-        "cr1.8xlarge": 2,
-        "d2.xlarge":   3,
-        "d2.2xlarge":  6,
-        "d2.4xlarge":  12,
-        "d2.8xlarge":  24,
-        "g2.2xlarge":  1,
-        "g2.8xlarge":  2,
-        "hi1.4xlarge": 2,
-        "hs1.8xlarge": 24,
-        "i2.xlarge":   1,
-        "i2.2xlarge":  2,
-        "i2.4xlarge":  4,
-        "i2.8xlarge":  8,
-        "m1.small":    1,
-        "m1.medium":   1,
-        "m1.large":    2,
-        "m1.xlarge":   4,
-        "m2.xlarge":   1,
-        "m2.2xlarge":  1,
-        "m2.4xlarge":  2,
-        "m3.medium":   1,
-        "m3.large":    1,
-        "m3.xlarge":   2,
-        "m3.2xlarge":  2,
-        "m4.large":    0,
-        "m4.xlarge":   0,
-        "m4.2xlarge":  0,
-        "m4.4xlarge":  0,
-        "m4.10xlarge": 0,
-        "r3.large":    1,
-        "r3.xlarge":   1,
-        "r3.2xlarge":  1,
-        "r3.4xlarge":  1,
-        "r3.8xlarge":  2,
-        "t1.micro":    0,
-        "t2.micro":    0,
-        "t2.small":    0,
-        "t2.medium":   0,
-        "t2.large":    0,
-    }
-    if instance_type in disks_by_instance:
-        return disks_by_instance[instance_type]
-    else:
-        print("WARNING: Don't know number of disks on instance type %s; assuming 1"
-              % instance_type, file=stderr)
-        return 1
 
 
 # Deploy the configuration file templates in a given local directory to
@@ -1300,21 +1072,10 @@ def ssh_write(host, opts, command, arguments):
             tries = tries + 1
 
 
-# Gets a list of zones to launch instances in
-def get_zones(conn, opts):
-    if opts.zone == 'all':
-        zones = [z.name for z in conn.get_all_zones()]
-    else:
-        zones = [opts.zone]
-    return zones
 
 
-# Gets the number of items in a partition
-def get_partition(total, num_partitions, current_partitions):
-    num_slaves_this_zone = total // num_partitions
-    if (total % num_partitions) - current_partitions > 0:
-        num_slaves_this_zone += 1
-    return num_slaves_this_zone
+
+
 
 
 # Gets the IP address, taking into account the --private-ips flag
