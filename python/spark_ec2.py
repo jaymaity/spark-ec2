@@ -31,6 +31,7 @@ import pipes
 import random
 import shutil
 import string
+import json
 from stat import S_IRUSR
 import subprocess
 import sys
@@ -478,6 +479,155 @@ def get_spark_ami(opts):
     return ami
 
 
+def __get_master_group_name(cluster_name):
+    return cluster_name + "-master"
+
+
+def __get_slave_group_name(cluster_name):
+    return cluster_name + "-slave"
+
+def __apply_inter_security_group_rules(master_group, slave_group,
+                                       connection_list,
+                                       group_to_apply):
+    """
+    Apply interconnection security rules among master slave interaction
+    :param master_group:
+    :param slave_group:
+    :param connection_list:
+    :param group_to_apply:
+    :return:
+    """
+    master_inter_conn = connection_list[group_to_apply]
+
+    for security_row in master_inter_conn:
+        protocol = security_row["ip_protocol"]
+        port_from = security_row["port_form"]
+        port_to = security_row["port_to"]
+        group_to_authorize = security_row["target"]
+
+        if group_to_authorize == "master":
+            src_group = master_group
+        elif group_to_authorize == "slave":
+            src_group = slave_group
+        else:
+            print("Sorry we do not know where should we apply security group with:\n"
+                  "Protocol: {0}\tStart Port:{1}\tEnd Port:{2}\tSource Type:{3}".
+                  format(protocol, port_from, port_to, group_to_authorize))
+
+        master_group.authorize(ip_protocol=protocol,
+                               from_port=-port_from,
+                               to_port=-port_to,
+                               src_group=src_group)
+
+
+def __apply_individual_security_group_rules(security_group,
+                                 connection_list,
+                                 module_list,
+                                 authorized_address):
+    """
+    Apply security rules within group
+    :param security_group:
+    :param connection_list:
+    :param module_list:
+    :param authorized_address:
+    :return:
+    """
+    for security_row in connection_list:
+        protocol = security_row["ip_protocol"]
+        port_from = security_row["port_form"]
+        port_to = security_row["port_to"]
+        for_app = security_row["for_app"]
+
+        if for_app in module_list:
+            security_group.authorize(protocol, port_from,
+                                     port_to, authorized_address)
+
+
+def __apply_master_group_rules(vpc_id, inter_conn, master_group, slave_group, authorized_address):
+    """
+    Configure and apply all slave group rules
+    :param vpc_id:
+    :param inter_conn:
+    :param master_group:
+    :param slave_group:
+    :return:
+    """
+    if vpc_id is None:
+        master_group.authorize(src_group=master_group)
+        master_group.authorize(src_group=slave_group)
+    else:
+        __apply_inter_security_group_rules(master_group, slave_group, inter_conn, "master")
+
+    fp_master_conn = open("./config/security_group/master.json")
+    master_conn = json.load(fp_master_conn)
+
+    # Apply security group rules in master security group
+    __apply_individual_security_group_rules(master_group, master_conn, modules,
+                                            authorized_address)
+
+
+def __apply_slave_group_rules(vpc_id, inter_conn, master_group, slave_group, authorized_address):
+    """
+    Configure and apply all master group rules
+    :param vpc_id:
+    :param inter_conn:
+    :param master_group:
+    :param slave_group:
+    :return:
+    """
+    if vpc_id is None:
+        slave_group.authorize(src_group=master_group)
+        slave_group.authorize(src_group=slave_group)
+    else:
+        __apply_inter_security_group_rules(master_group, slave_group, inter_conn, "slave")
+
+    fp_master_conn = open("./config/security_group/slave.json")
+    slave_conn = json.load(fp_master_conn)
+
+    # Apply security group rules in master security group
+    __apply_individual_security_group_rules(slave_group, slave_conn, modules,
+                                            authorized_address)
+
+
+def create_apply_security_group_rules(conn, opts, cluster_name,
+                                      existing_masters, existing_slaves):
+    """
+    Creates and apply security groups
+    :param conn:
+    :param opts:
+    :param cluster_name:
+    :return:
+    """
+    # Creates mater and slave security group name
+    master_group = get_or_make_group(conn, __get_master_group_name(cluster_name), opts.vpc_id)
+    slave_group = get_or_make_group(conn, __get_slave_group_name(cluster_name), opts.vpc_id)
+
+    # If there is already some instances running on that security group
+    if existing_slaves or (existing_masters and not opts.use_existing_master):
+        print("ERROR: There are already instances running in group %s or %s" %
+              (master_group.name, slave_group.name), file=stderr)
+        sys.exit(1)
+
+    # Loads inter connection security rules
+    fp_inter_conn = open("./config/security_group/interconn-masterslave.json")
+    inter_conn = json.load(fp_inter_conn)
+
+    if len(master_group.rules) == 0:  # Group was just now created
+        __apply_slave_group_rules(opts.vpc_id, inter_conn, master_group, slave_group, opts.authorized_address)
+
+    if len(slave_group.rules) == 0:  # Group was just now created
+        __apply_master_group_rules(opts.vpc_id, inter_conn, master_group, slave_group, opts.authorized_address)
+
+    # we use group ids to work around https://github.com/boto/boto/issues/350
+    additional_group_ids = []
+    if opts.additional_security_group:
+        additional_group_ids = [sg.id
+                                for sg in conn.get_all_security_groups()
+                                if opts.additional_security_group in (sg.name, sg.id)]
+
+    return master_group, slave_group, additional_group_ids
+
+
 # Launch a cluster of the given name, by setting up its security groups,
 # and then starting new instances in them.
 # Returns a tuple of EC2 reservation objects for the master and slaves
@@ -497,92 +647,17 @@ def launch_cluster(conn, opts, cluster_name):
             user_data_content = user_data_file.read()
 
     print("Setting up security groups...")
-    master_group = get_or_make_group(conn, cluster_name + "-master", opts.vpc_id)
-    slave_group = get_or_make_group(conn, cluster_name + "-slaves", opts.vpc_id)
-    authorized_address = opts.authorized_address
-    if master_group.rules == []:  # Group was just now created
-        if opts.vpc_id is None:
-            master_group.authorize(src_group=master_group)
-            master_group.authorize(src_group=slave_group)
-        else:
-            master_group.authorize(ip_protocol='icmp', from_port=-1, to_port=-1,
-                                   src_group=master_group)
-            master_group.authorize(ip_protocol='tcp', from_port=0, to_port=65535,
-                                   src_group=master_group)
-            master_group.authorize(ip_protocol='udp', from_port=0, to_port=65535,
-                                   src_group=master_group)
-            master_group.authorize(ip_protocol='icmp', from_port=-1, to_port=-1,
-                                   src_group=slave_group)
-            master_group.authorize(ip_protocol='tcp', from_port=0, to_port=65535,
-                                   src_group=slave_group)
-            master_group.authorize(ip_protocol='udp', from_port=0, to_port=65535,
-                                   src_group=slave_group)
-        master_group.authorize('tcp', 22, 22, authorized_address)
-        master_group.authorize('tcp', 8080, 8081, authorized_address)
-        master_group.authorize('tcp', 18080, 18080, authorized_address)
-        master_group.authorize('tcp', 19999, 19999, authorized_address)
-        master_group.authorize('tcp', 50030, 50030, authorized_address)
-        master_group.authorize('tcp', 50070, 50070, authorized_address)
-        master_group.authorize('tcp', 60070, 60070, authorized_address)
-        master_group.authorize('tcp', 4040, 4045, authorized_address)
-        # Rstudio (GUI for R) needs port 8787 for web access
-        master_group.authorize('tcp', 8787, 8787, authorized_address)
-        # HDFS NFS gateway requires 111,2049,4242 for tcp & udp
-        master_group.authorize('tcp', 111, 111, authorized_address)
-        master_group.authorize('udp', 111, 111, authorized_address)
-        master_group.authorize('tcp', 2049, 2049, authorized_address)
-        master_group.authorize('udp', 2049, 2049, authorized_address)
-        master_group.authorize('tcp', 4242, 4242, authorized_address)
-        master_group.authorize('udp', 4242, 4242, authorized_address)
-        # RM in YARN mode uses 8088
-        master_group.authorize('tcp', 8088, 8088, authorized_address)
-        master_group.authorize('tcp', 8000, 8000, authorized_address)
-        if opts.ganglia:
-            master_group.authorize('tcp', 5080, 5080, authorized_address)
-    if slave_group.rules == []:  # Group was just now created
-        if opts.vpc_id is None:
-            slave_group.authorize(src_group=master_group)
-            slave_group.authorize(src_group=slave_group)
-        else:
-            slave_group.authorize(ip_protocol='icmp', from_port=-1, to_port=-1,
-                                  src_group=master_group)
-            slave_group.authorize(ip_protocol='tcp', from_port=0, to_port=65535,
-                                  src_group=master_group)
-            slave_group.authorize(ip_protocol='udp', from_port=0, to_port=65535,
-                                  src_group=master_group)
-            slave_group.authorize(ip_protocol='icmp', from_port=-1, to_port=-1,
-                                  src_group=slave_group)
-            slave_group.authorize(ip_protocol='tcp', from_port=0, to_port=65535,
-                                  src_group=slave_group)
-            slave_group.authorize(ip_protocol='udp', from_port=0, to_port=65535,
-                                  src_group=slave_group)
-        slave_group.authorize('tcp', 22, 22, authorized_address)
-        slave_group.authorize('tcp', 8080, 8081, authorized_address)
-        slave_group.authorize('tcp', 50060, 50060, authorized_address)
-        slave_group.authorize('tcp', 50075, 50075, authorized_address)
-        slave_group.authorize('tcp', 60060, 60060, authorized_address)
-        slave_group.authorize('tcp', 60075, 60075, authorized_address)
-
-    # Check if instances are already running in our groups
-    existing_masters, existing_slaves = get_existing_cluster(conn, opts, cluster_name,
+    # Get instances are already running in our groups
+    existing_masters, existing_slaves = get_existing_cluster(conn, opts.region, cluster_name,
                                                              die_on_error=False)
-    if existing_slaves or (existing_masters and not opts.use_existing_master):
-        print("ERROR: There are already instances running in group %s or %s" %
-              (master_group.name, slave_group.name), file=stderr)
-        sys.exit(1)
+    master_group, slave_group, additional_group_ids = create_apply_security_group_rules(
+        conn, opts, cluster_name, existing_masters, existing_slaves)
 
     # Figure out Spark AMI
     if opts.ami is None:
         opts.ami = get_spark_ami(opts)
 
-    # we use group ids to work around https://github.com/boto/boto/issues/350
-    additional_group_ids = []
-    if opts.additional_security_group:
-        additional_group_ids = [sg.id
-                                for sg in conn.get_all_security_groups()
-                                if opts.additional_security_group in (sg.name, sg.id)]
     print("Launching instances...")
-
     try:
         image = conn.get_all_images(image_ids=[opts.ami])[0]
     except:
@@ -664,7 +739,7 @@ def launch_cluster(conn, opts, cluster_name):
             conn.cancel_spot_instance_requests(my_req_ids)
             # Log a warning if any of these requests actually launched instances:
             (master_nodes, slave_nodes) = get_existing_cluster(
-                conn, opts, cluster_name, die_on_error=False)
+                conn, opts.region, cluster_name, die_on_error=False)
             running = len(master_nodes) + len(slave_nodes)
             if running:
                 print(("WARNING: %d instances are still running" % running), file=stderr)
@@ -754,13 +829,13 @@ def launch_cluster(conn, opts, cluster_name):
     return (master_nodes, slave_nodes)
 
 
-def get_existing_cluster(conn, opts, cluster_name, die_on_error=True):
+def get_existing_cluster(conn, region_name, cluster_name, die_on_error=True):
     """
     Get the EC2 instances in an existing cluster if available.
     Returns a tuple of lists of EC2 instance objects for the masters and slaves.
     """
     print("Searching for existing cluster {c} in region {r}...".format(
-          c=cluster_name, r=opts.region))
+          c=cluster_name, r=region_name))
 
     def get_instances(group_names):
         """
@@ -774,8 +849,8 @@ def get_existing_cluster(conn, opts, cluster_name, die_on_error=True):
         instances = itertools.chain.from_iterable(r.instances for r in reservations)
         return [i for i in instances if i.state not in ["shutting-down", "terminated"]]
 
-    master_instances = get_instances([cluster_name + "-master"])
-    slave_instances = get_instances([cluster_name + "-slaves"])
+    master_instances = get_instances([__get_master_group_name(cluster_name)])
+    slave_instances = get_instances([__get_slave_group_name(cluster_name)])
 
     if any((master_instances, slave_instances)):
         print("Found {m} master{plural_m}, {s} slave{plural_s}.".format(
@@ -786,11 +861,14 @@ def get_existing_cluster(conn, opts, cluster_name, die_on_error=True):
 
     if not master_instances and die_on_error:
         print("ERROR: Could not find a master for cluster {c} in region {r}.".format(
-              c=cluster_name, r=opts.region), file=sys.stderr)
+              c=cluster_name, r=region_name), file=sys.stderr)
         sys.exit(1)
 
-    return (master_instances, slave_instances)
+    return master_instances, slave_instances
 
+
+modules = ['spark', 'ephemeral-hdfs', 'persistent-hdfs',
+           'mapreduce', 'spark-standalone', 'tachyon']
 
 # Deploy configuration files and run setup scripts on a newly launched
 # or started EC2 cluster.
@@ -810,9 +888,6 @@ def setup_cluster(conn, master_nodes, slave_nodes, opts, deploy_ssh_key):
             slave_address = get_dns_name(slave, opts.private_ips)
             print(slave_address)
             ssh_write(slave_address, opts, ['tar', 'x'], dot_ssh_tar)
-
-    modules = ['spark', 'ephemeral-hdfs', 'persistent-hdfs',
-               'mapreduce', 'spark-standalone', 'tachyon']
 
     if opts.hadoop_major_version == "1":
         modules = list(filter(lambda x: x != "mapreduce", modules))
@@ -1351,7 +1426,7 @@ def real_main():
             print("ERROR: You have to start at least 1 slave", file=sys.stderr)
             sys.exit(1)
         if opts.resume:
-            (master_nodes, slave_nodes) = get_existing_cluster(conn, opts, cluster_name)
+            (master_nodes, slave_nodes) = get_existing_cluster(conn, opts.region, cluster_name)
         else:
             (master_nodes, slave_nodes) = launch_cluster(conn, opts, cluster_name)
         wait_for_cluster_state(
@@ -1364,7 +1439,7 @@ def real_main():
 
     elif action == "destroy":
         (master_nodes, slave_nodes) = get_existing_cluster(
-            conn, opts, cluster_name, die_on_error=False)
+            conn, opts.region, cluster_name, die_on_error=False)
 
         if any(master_nodes + slave_nodes):
             print("The following instances will be terminated:")
@@ -1432,7 +1507,7 @@ def real_main():
                     print("Try re-running in a few minutes.")
 
     elif action == "login":
-        (master_nodes, slave_nodes) = get_existing_cluster(conn, opts, cluster_name)
+        (master_nodes, slave_nodes) = get_existing_cluster(conn, opts.region, cluster_name)
         if not master_nodes[0].public_dns_name and not opts.private_ips:
             print("Master has no public DNS name.  Maybe you meant to specify --private-ips?")
         else:
@@ -1451,7 +1526,7 @@ def real_main():
             "Reboot cluster slaves " + cluster_name + " (y/N): ")
         if response == "y":
             (master_nodes, slave_nodes) = get_existing_cluster(
-                conn, opts, cluster_name, die_on_error=False)
+                conn, opts.region, cluster_name, die_on_error=False)
             print("Rebooting slaves...")
             for inst in slave_nodes:
                 if inst.state not in ["shutting-down", "terminated"]:
@@ -1459,7 +1534,7 @@ def real_main():
                     inst.reboot()
 
     elif action == "get-master":
-        (master_nodes, slave_nodes) = get_existing_cluster(conn, opts, cluster_name)
+        (master_nodes, slave_nodes) = get_existing_cluster(conn, opts.region, cluster_name)
         if not master_nodes[0].public_dns_name and not opts.private_ips:
             print("Master has no public DNS name.  Maybe you meant to specify --private-ips?")
         else:
@@ -1475,7 +1550,7 @@ def real_main():
             "Stop cluster " + cluster_name + " (y/N): ")
         if response == "y":
             (master_nodes, slave_nodes) = get_existing_cluster(
-                conn, opts, cluster_name, die_on_error=False)
+                conn, opts.region, cluster_name, die_on_error=False)
             print("Stopping master...")
             for inst in master_nodes:
                 if inst.state not in ["shutting-down", "terminated"]:
@@ -1489,7 +1564,7 @@ def real_main():
                         inst.stop()
 
     elif action == "start":
-        (master_nodes, slave_nodes) = get_existing_cluster(conn, opts, cluster_name)
+        (master_nodes, slave_nodes) = get_existing_cluster(conn, opts.region, cluster_name)
         print("Starting slaves...")
         for inst in slave_nodes:
             if inst.state not in ["shutting-down", "terminated"]:
