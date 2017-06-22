@@ -25,7 +25,7 @@ def test_security_group_no_group_exists():
     opts.additional_security_group = False
     opts.authorized_address = "0.0.0.0/0"
 
-    cluster_name = str(uuid.uuid4())
+    cluster_name = "1f23341d-5003-40a9-99b2-a23e1c61b384"  # str(uuid.uuid4())
 
     sec_group = sg.SecurityGroup(conn, modules, opts, cluster_name)
     master_group, slave_group, additional_group_ids = \

@@ -54,6 +54,20 @@ class SecurityGroup(object):
         self.__master_group = get_or_make_group(self.conn, get_master_group_name(cluster_name), self.opts.vpc_id)
         self.__slave_group = get_or_make_group(self.conn, get_slave_group_name(cluster_name), self.opts.vpc_id)
 
+    def get_master_group(self):
+        """
+        Get master group object
+        :return:
+        """
+        return self.__master_group
+
+    def get_slave_group(self):
+        """
+        Get Slave group object
+        :return:
+        """
+        return self.__slave_group
+
     def __apply_inter_security_group_rules(self, connection_list, group_to_apply):
         """
         Apply interconnection security rules among master slave interaction
