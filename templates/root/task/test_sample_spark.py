@@ -7,7 +7,7 @@ import tarfile
 import shutil
 
 JOB_NAME = "Test Spark JOB"
-TEMP_FOLDER = "/tmp/"
+TEMP_FOLDER = "/root/task/"
 APP_PATH = TEMP_FOLDER + "distrib-load-test-app/"
 TEMP_TAR = TEMP_FOLDER + "appfile.tar.gz"
 LOAD_COUNT = 2
@@ -148,14 +148,15 @@ def run_parallel_job(no_of_load):
     # execute the program using pipe
     rdd_load_pipe = rdd_load.pipe(exec_runload_arg)
     rdd_load_pipe.count()
-    # print(rdd_load_pipe.collect())
+    print(rdd_load_pipe.collect())
     print("\n\nTask execution complete.\n\n")
 
     # Collection of log after execution
     exec_collectlog_arg = " ".join([COLLECTLOG_SCRIPT_PATH, APP_PATH, BUCKET_NAME])
+    print("-----------------\nExecuting:\n "+exec_collectlog_arg+"\n\n\n")
     rdd_log_pipe = rdd_load.pipe(exec_collectlog_arg)
     rdd_log_pipe.count()
-    # print(rdd_pipe2.collect())
+    print(rdd_log_pipe.collect())
 
     print("\n\nLogs are uploaded to S3.\n\n")
     sc.stop()
