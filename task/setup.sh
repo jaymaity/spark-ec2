@@ -2,8 +2,7 @@
 
 for node in $SLAVES; do
   echo $node
-  sudo yum update
-  ssh -t -t $SSH_OPTS root@$node "/root/task/setup-master.sh" & sleep 0.3
+  ssh -t -t $SSH_OPTS root@$node "/root/task/setup-slave.sh" & sleep 0.3
   echo $node
 done
 wait
