@@ -7,15 +7,15 @@ import tarfile
 import shutil
 
 JOB_NAME = "Test Spark JOB"
-TEMP_FOLDER = "/root/task/"
+TEMP_FOLDER = "/tmp/"
 APP_PATH = TEMP_FOLDER + "distrib-load-test-app/"
 TEMP_TAR = TEMP_FOLDER + "appfile.tar.gz"
-LOAD_COUNT = 2
+LOAD_COUNT = 1
 # KEY_PATH = "/app/distrib-load-test-app.tar.gz"
 KEY_PATH = "/testjay/distrib-load-test-app.tar.gz"
 BUCKET_NAME = "distrib-load-test-bucket"
 
-SCRIPT_PATH = "/root/task/"
+SCRIPT_PATH = "/root/spark-ec2/templates/root/task/"
 LOADTEST_SCRIPT_PATH = SCRIPT_PATH + "runloadtest.sh"
 COLLECTLOG_SCRIPT_PATH = SCRIPT_PATH + "collectlog.sh"
 
@@ -148,7 +148,7 @@ def run_parallel_job(no_of_load):
     # execute the program using pipe
     rdd_load_pipe = rdd_load.pipe(exec_runload_arg)
     rdd_load_pipe.count()
-    print(rdd_load_pipe.collect())
+    # print(rdd_load_pipe.collect())
     print("\n\nTask execution complete.\n\n")
 
     # Collection of log after execution
@@ -156,7 +156,7 @@ def run_parallel_job(no_of_load):
     print("-----------------\nExecuting:\n "+exec_collectlog_arg+"\n\n\n")
     rdd_log_pipe = rdd_load.pipe(exec_collectlog_arg)
     rdd_log_pipe.count()
-    print(rdd_log_pipe.collect())
+    # print(rdd_log_pipe.collect())
 
     print("\n\nLogs are uploaded to S3.\n\n")
     sc.stop()
@@ -187,7 +187,7 @@ if __name__ == "__main__":
     if len(sys.argv) == 4:
         LOAD_COUNT = int(sys.argv[3])
 
-    # clear_downloaded_file(LOAD_COUNT)
+    clear_downloaded_file(LOAD_COUNT)
     run_parallel_job(LOAD_COUNT)
 
 
