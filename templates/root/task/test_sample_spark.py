@@ -6,15 +6,22 @@ import os.path
 import tarfile
 import shutil
 
+# Name of the spark JOB; It is not necessary to change
 JOB_NAME = "Test Spark JOB"
+# Path of the tar of executable files to be downloaded and extracted. Also this location must have write access
 TEMP_FOLDER = "/tmp/"
+# Name of the directory where content of the tar file will be extracted
 APP_PATH = TEMP_FOLDER + "distrib-load-test-app/"
+# Name of the tar file in local after download from S3, it can be any name
 TEMP_TAR = TEMP_FOLDER + "appfile.tar.gz"
+# Total number of test to simulate
 LOAD_COUNT = 1
 # KEY_PATH = "/app/distrib-load-test-app.tar.gz"
+# Path of the file in S3
 KEY_PATH = "/testjay/distrib-load-test-app.tar.gz"
+# Bucket name in S3 where test executable is located
 BUCKET_NAME = "distrib-load-test-bucket"
-
+# Script execution path to run load test and upload s3 script
 SCRIPT_PATH = "/root/spark-ec2/templates/root/task/"
 LOADTEST_SCRIPT_PATH = SCRIPT_PATH + "runloadtest.sh"
 COLLECTLOG_SCRIPT_PATH = SCRIPT_PATH + "collectlog.sh"
