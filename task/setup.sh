@@ -1,4 +1,7 @@
 #!/bin/bash
+echo hostname
+echo pwd
+/root/spark-ec2/copy-dir /root/task
 
 for node in $SLAVES; do
   echo $node

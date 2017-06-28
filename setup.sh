@@ -77,9 +77,9 @@ echo_time_diff "setup-slave" "$setup_slave_start_time" "$setup_slave_end_time"
 
 # Always include 'scala' module if it's not defined as a work around
 # for older versions of the scripts.
-if [[ ! $MODULES =~ *scala* ]]; then
-  MODULES=$(printf "%s\n%s\n" "scala" $MODULES)
-fi
+# if [[ ! $MODULES =~ *scala* ]]; then
+#  MODULES=$(printf "%s\n%s\n" "scala" $MODULES)
+# fi
 
 # Install / Init module
 for module in $MODULES; do
