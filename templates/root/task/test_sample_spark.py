@@ -113,10 +113,11 @@ def configure_app():
     :param arguments:
     :return:
     """
-    if not os.path.exists(TEMP_TAR):
-        download_file_from_s3(BUCKET_NAME, KEY_PATH, TEMP_TAR)
-    else:
-        print("\n\n\n\n\n File download skipped... \n\n\n\n")
+    return None
+    # if not os.path.exists(TEMP_TAR):
+    #     download_file_from_s3(BUCKET_NAME, KEY_PATH, TEMP_TAR)
+    # else:
+    #     print("\n\n\n\n\n File download skipped... \n\n\n\n")
 
     # Creation of shell script dynamically
     # if not os.path.exists(app_path + SCRIPT_FILE):

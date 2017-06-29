@@ -1,8 +1,20 @@
-#!/bin/sh
-sudo su
-cd $1
-export LD_LIBRARY_PATH="/root/task/distrib-load-test-app/":
-chmod 777 $1*.*
-echo $(hostname -f)
-$1distrib-load-test-app $(hostname -f) $2
+#!/bin/bash -ex
+exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+sudo yum install -y awslogs
+sudo rm -f /var/log/agent-state
+sudo aws s3 cp s3://distrib-load-test-bucket/awslogs.conf /etc/awslogs/.
+sudo aws s3 cp s3://distrib-load-test-bucket/awscli.conf /etc/awslogs/.
+aws s3 cp s3://distrib-load-test-bucket/testjay/distrib-load-test-app.tar.gz ~/
+cd ~/
+tar -zxvf distrib-load-test-app.tar.gz
+cd distrib-load-test
+export LD_LIBRARY_PATH=~/distrib-load-test/:$LD_LIBRARY_PATH
+EC2_AVAIL_ZONE=`curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone`
+EC2_REGION="`echo \"$EC2_AVAIL_ZONE\" | sed -e 's:\([0-9][0-9]*\)[a-z]*\$:\\1:'`"
+./distrib-load-test-app $(hostname) $EC2_REGION
+export SIM_LOG=$(hostname)_$(date +%m-%d-%yT%T)_usersimulation.log
+export ST_LOG=$(hostname)_$(date +%m-%d-%yT%T)_stresstest.log
+aws s3 cp usersimulation.log s3://distrib-load-test-bucket/output/$SIM_LOG --storage-class REDUCED_REDUNDANCY
+aws s3 cp stresstest.log s3://distrib-load-test-bucket/output/$ST_LOG --storage-class REDUCED_REDUNDANCY
+sudo service awslogs start
             
