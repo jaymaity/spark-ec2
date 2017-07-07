@@ -584,7 +584,8 @@ def launch_cluster(conn, opts, cluster_name):
     print("Launching instances...")
 
     try:
-        image = conn.get_all_images(image_ids=[opts.ami])[0]
+        image = conn.get_all_images(image_ids=["ami-5bc1c64d"])[0]
+        master_image = conn.get_all_images(image_ids=["ami-5bc1c64d"])[0]
     except:
         print("Could not find AMI " + opts.ami, file=stderr)
         sys.exit(1)
