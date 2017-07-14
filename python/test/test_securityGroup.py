@@ -8,30 +8,55 @@ import json
 
 # Creates opt class
 class Opt:
-    region = 'us-east-1'
+    REGION = 'us-east-1'
     vpc_id = None
     use_existing_master = False
     additional_security_group = False
     authorized_address = "0.0.0.0/0"
 
+# Configure common parameters for security group options
+REGION = 'us-east-1'
+CONNEC2 = ec2.connect_to_region(REGION)
+MODULES = ['ssh', 'spark', 'ephemeral-hdfs', 'persistent-hdfs',
+                   'mapreduce', 'spark-standalone', 'tachyon']
+OPTS = Opt()
+OPTS.region = REGION
+OPTS.vpc_id = None
+OPTS.use_existing_master = False
+OPTS.additional_security_group = False
+OPTS.authorized_address = "0.0.0.0/0"
+
 
 class TestSecurityGroup(TestCase):
 
     @mock_ec2
-    def test_get_master_group(self):
-        self.fail()
+    def test_get_master_slave_group_not_exists(self):
+        """
+        Test getting master and slave group when it does not exists previously
+        """
+        cluster_name = str(uuid.uuid4())
 
-    def test_get_slave_group(self):
-        self.fail()
+        # Creates the security group
+        sec_group = sg.SecurityGroup(CONNEC2, MODULES, OPTS, cluster_name)
+        sec_group.create_security_group()
+        master_group = sec_group.get_master_group()
+        slave_group = sec_group.get_slave_group()
 
-    def test_make_and_get_group(self):
-        self.fail()
-
-    def test_create_security_group(self):
-        self.fail()
+        is_rule_passed = TestSecurityGroup.is_all_rule_exists(REGION, master_group.name,
+                                                              slave_group.name, MODULES,
+                                                              is_delete_groups=True)
+        self.assertEquals(is_rule_passed, True)
 
     @staticmethod
     def is_security_rule_exists(protocol, port_from, port_to, security_group):
+        """
+        Checks for a particular security group exists or not
+        :param protocol:
+        :param port_from:
+        :param port_to:
+        :param security_group:
+        :return:
+        """
         if security_group:
             for rule in security_group.rules:
                 if protocol == rule.ip_protocol \
@@ -43,6 +68,15 @@ class TestSecurityGroup(TestCase):
     @staticmethod
     def is_inter_security_rule_exists(protocol, port_from, port_to, security_group,
                                       target_group_name):
+        """
+        Check if security rules among security groups exists or not
+        :param protocol:
+        :param port_from:
+        :param port_to:
+        :param security_group:
+        :param target_group_name:
+        :return:
+        """
         if security_group:
             for rule in security_group.rules:
                 if protocol == rule.ip_protocol \
@@ -55,6 +89,13 @@ class TestSecurityGroup(TestCase):
 
     @staticmethod
     def is_all_security_rule_exists(json_rules, modules, security_group):
+        """
+        Checks for all security rules for a module exists or not
+        :param json_rules:
+        :param modules:
+        :param security_group:
+        :return:
+        """
         # Test for master security group rules
         for security_row in json_rules:
             protocol = security_row["ip_protocol"]
@@ -71,6 +112,14 @@ class TestSecurityGroup(TestCase):
 
     @staticmethod
     def is_inter_conn_rule_exists(json_rules, security_group, master_group_name, slave_group_name):
+        """
+        Check all security rule for inter conn module exists or not
+        :param json_rules:
+        :param security_group:
+        :param master_group_name:
+        :param slave_group_name:
+        :return:
+        """
         # Test for master security group rules
         for security_row in json_rules:
             protocol = security_row["ip_protocol"]
@@ -91,7 +140,15 @@ class TestSecurityGroup(TestCase):
 
     @staticmethod
     def is_all_rule_exists(region, master_group_name, slave_group_name, modules, is_delete_groups=True):
-
+        """
+        Overall check for all security rules for a list of moduless
+        :param region:
+        :param master_group_name:
+        :param slave_group_name:
+        :param modules:
+        :param is_delete_groups:
+        :return:
+        """
         conn = ec2.connect_to_region(region)
 
         # Get Security group by querying
@@ -125,51 +182,40 @@ class TestSecurityGroup(TestCase):
 
     @mock_ec2
     def test_new_security_group(self):
-        region = 'us-east-1'
-        conn = ec2.connect_to_region(region)
-        modules = ['ssh', 'spark', 'ephemeral-hdfs', 'persistent-hdfs',
-                   'mapreduce', 'spark-standalone', 'tachyon']
-        opts = Opt()
-        opts.region = region
-        opts.vpc_id = None
-        opts.use_existing_master = False
-        opts.additional_security_group = False
-        opts.authorized_address = "0.0.0.0/0"
+        """
+        Test creation of brand new security group
+        :return:
+        """
 
         cluster_name = str(uuid.uuid4())
 
         # Creates the security group
-        sec_group = sg.SecurityGroup(conn, modules, opts, cluster_name)
+        sec_group = sg.SecurityGroup(CONNEC2, MODULES, OPTS, cluster_name)
         master_group, slave_group, additional_group_ids = \
             sec_group.create_security_group()
 
         # Check all the security rules: if it exists in recently
         # created group for the modules selected from the json files
-        all_rules_in_secgroup = TestSecurityGroup.is_all_rule_exists(region, master_group.name, slave_group.name, modules)
+        all_rules_in_secgroup = TestSecurityGroup.is_all_rule_exists(REGION, master_group.name, slave_group.name, MODULES)
 
         self.assertEqual(all_rules_in_secgroup, True)
 
     def test_existing_security_group_override(self):
-        region = 'us-east-1'
-        conn = ec2.connect_to_region(region)
-        opts = Opt()
-        opts.region = region
-        opts.vpc_id = None
-        opts.use_existing_master = False
-        opts.additional_security_group = False
-        opts.authorized_address = "0.0.0.0/0"
-
+        """
+        Test Existing group with rule override
+        :return:
+        """
         cluster_name = str(uuid.uuid4())
 
         # Creates the security group with less modules
         modules = ['ssh', 'spark', 'ephemeral-hdfs']
-        sec_group = sg.SecurityGroup(conn, modules, opts, cluster_name)
+        sec_group = sg.SecurityGroup(CONNEC2, modules, OPTS, cluster_name)
         master_group, slave_group, additional_group_ids = \
             sec_group.create_security_group()
 
         # Test if the group is created for the first time
         all_rules_in_secgroup = TestSecurityGroup. \
-            is_all_rule_exists(region, master_group.name, slave_group.name, modules, False)
+            is_all_rule_exists(REGION, master_group.name, slave_group.name, modules, False)
         self.assertEqual(all_rules_in_secgroup, True)
 
         # 2nd part of the test with existing security group
@@ -177,35 +223,31 @@ class TestSecurityGroup(TestCase):
                    'mapreduce', 'spark-standalone', 'tachyon']
         # Creates the group for the second time with more modules
         # So that more rules can be added
-        sec_group = sg.SecurityGroup(conn, modules, opts, cluster_name, is_override=True)
+        sec_group = sg.SecurityGroup(CONNEC2, modules, OPTS, cluster_name, is_override=True)
         master_group, slave_group, additional_group_ids = \
             sec_group.create_security_group()
 
         all_rules_in_secgroup = TestSecurityGroup. \
-            is_all_rule_exists(region, master_group.name, slave_group.name, modules)
+            is_all_rule_exists(REGION, master_group.name, slave_group.name, modules)
         self.assertEqual(all_rules_in_secgroup, True)
 
     def test_existing_security_group_no_override(self):
-        region = 'us-east-1'
-        conn = ec2.connect_to_region(region)
-        opts = Opt()
-        opts.region = region
-        opts.vpc_id = None
-        opts.use_existing_master = False
-        opts.additional_security_group = False
-        opts.authorized_address = "0.0.0.0/0"
-
+        """
+        Test Existing security group without any override
+        Ideally it should throw exception
+        :return:
+        """
         cluster_name = str(uuid.uuid4())
 
         # Creates the security group with less modules
         modules = ['ssh', 'spark', 'ephemeral-hdfs']
-        sec_group = sg.SecurityGroup(conn, modules, opts, cluster_name)
+        sec_group = sg.SecurityGroup(CONNEC2, modules, OPTS, cluster_name)
         master_group, slave_group, additional_group_ids = \
             sec_group.create_security_group()
 
         # Test if the group is created for the first time
         all_rules_in_secgroup = TestSecurityGroup.\
-            is_all_rule_exists(region, master_group.name, slave_group.name, modules, False)
+            is_all_rule_exists(REGION, master_group.name, slave_group.name, modules, False)
         self.assertEqual(all_rules_in_secgroup, True)
 
         # 2nd part of the test with existing security group
@@ -215,11 +257,11 @@ class TestSecurityGroup(TestCase):
         with self.assertRaises(Exception) as context:
             # Creates the group for the second time with more modules
             # So that more rules can be added
-            sec_group = sg.SecurityGroup(conn, modules, opts, cluster_name, is_override=False)
+            sec_group = sg.SecurityGroup(CONNEC2, modules, OPTS, cluster_name, is_override=False)
             sec_group.create_security_group()
 
         # Deletes all security groups
-        conn.delete_security_group(master_group.name, master_group.id)
-        conn.delete_security_group(slave_group.name, slave_group.id)
+        CONNEC2.delete_security_group(master_group.name, master_group.id)
+        CONNEC2.delete_security_group(slave_group.name, slave_group.id)
 
         self.assertTrue(context.exception, "Security Group Exists")

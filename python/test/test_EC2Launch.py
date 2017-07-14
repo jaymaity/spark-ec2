@@ -1,11 +1,10 @@
+from unittest import TestCase
 from boto import ec2
-from moto import mock_ec2
+# from moto import mock_ec2
 import python.aws.security_group as sg
 import uuid
-import python.aws.ec2_launch as ec2launch
+import python.aws.ec2_cluster as ec2launch
 from optparse import OptionParser
-
-import boto
 
 parser = OptionParser(
     prog="spark-ec2",
@@ -30,11 +29,11 @@ parser.add_option(
     help="If you have multiple profiles (AWS or boto config), you can configure " +
          "additional, named profiles by using this option (default: %default)")
 parser.add_option(
-    "-t", "--instance-type", default="m3.large",
+    "-t", "--instance-type", default="t2.micro",
     help="Type of instance to launch (default: %default). " +
          "WARNING: must be 64-bit; small instances won't work")
 parser.add_option(
-    "-m", "--master-instance-type", default="",
+    "-m", "--master-instance-type", default="t2.micro",
     help="Master instance type (leave empty for same as instance-type)")
 parser.add_option(
     "-r", "--region", default="us-east-1",
@@ -169,54 +168,56 @@ parser.add_option(
 (opts, args) = parser.parse_args()
 
 
-class Opt:
-    region = 'us-east-1'
-    vpc_id = None
-    use_existing_master = False
-    additional_security_group = False
-    authorized_address = "0.0.0.0/0"
-    slaves = 2
-    ebs_vol_size = None
-    ami = "ami-a07379d9"
+class TestEC2Launch(TestCase):
+    def test_simple_ec2_launch(self):
+        opts.region = 'us-east-1'
+        opts.vpc_id = None
+        opts.use_existing_master = False
+        opts.additional_security_group = False
+        opts.authorized_address = "0.0.0.0/0"
+        opts.ami = "ami-a4c7edb2"
+        opts.slaves = 1
+
+        conn = ec2.connect_to_region(opts.region)
+        modules = ['ssh', 'spark', 'ephemeral-hdfs', 'persistent-hdfs',
+                   'mapreduce', 'spark-standalone', 'tachyon']
+
+        cluster_name = str(uuid.uuid4())
+
+        sec_group = sg.SecurityGroup(conn, modules, opts, cluster_name)
+        master_group, slave_group, additional_group_ids = \
+            sec_group.create_security_group()
+
+        # # Creation of test image
+        # reservation = conn.run_instances(opts.ami)
+        # instance = reservation.instances[0]
+        # # instance.modify_attribute("kernel", "test-kernel")
+        # image_id = conn.create_image(instance.id, "test-ami", "this is a test ami")
+        #
+        # opts.ami = image_id
+
+        # Launch instances
+        ec2launch.launch(conn, opts, cluster_name, master_group, slave_group,
+                         additional_group_ids, time_wait_to_propagate=15)
+
+        # Check if same no of slaves launched or not
+        # TODO: Write proper test cases
+        # It seems security group is not associated with mock
+        # Needs more investigation
+        reservations = conn.get_all_reservations()
+        for reservation in reservations:
+            print(opts.region + ':', reservation)
+
+        for vol in conn.get_all_volumes():
+            print(opts.region + ':', vol.id)
+        import time
+        time.sleep(300)
+        ec2launch.stop(conn, cluster_name)
+        time.sleep(300)
+        ec2launch.start(conn, cluster_name)
+        time.sleep(300)
+        ec2launch.reboot(conn, cluster_name)
+        time.sleep(300)
+        ec2launch.destroy(conn, cluster_name)
 
 
-@mock_ec2
-def test_simple_ec2_launch():
-    opts.region = 'us-east-1'
-    opts.vpc_id = None
-    opts.use_existing_master = False
-    opts.additional_security_group = False
-    opts.authorized_address = "0.0.0.0/0"
-    opts.ami = "ami-1234abcd"
-
-    conn = ec2.connect_to_region(opts.region)
-    modules = ['ssh', 'spark', 'ephemeral-hdfs', 'persistent-hdfs',
-               'mapreduce', 'spark-standalone', 'tachyon']
-
-    cluster_name = "1f23341d-5003-40a9-99b2-a23e1c61b384"  # str(uuid.uuid4())
-
-    sec_group = sg.SecurityGroup(conn, modules, opts, cluster_name)
-    master_group, slave_group, additional_group_ids = \
-        sec_group.create_security_group()
-
-    # connimg = boto.connect_ec2('us-east-1')
-    reservation = conn.run_instances('ami-1234abcd')
-    instance = reservation.instances[0]
-    # instance.modify_attribute("kernel", "test-kernel")
-    image_id = conn.create_image(instance.id, "test-ami", "this is a test ami")
-
-    opts.ami = image_id
-
-    awsec2 = ec2launch.EC2Launch(conn, opts, master_group, slave_group, additional_group_ids, cluster_name)
-    awsec2.launch_instances()
-
-    # TODO: Write proper test cases
-    reservations = conn.get_all_reservations()
-    for reservation in reservations:
-        print(opts.region + ':', reservation.instances)
-
-    for vol in conn.get_all_volumes():
-        print(opts.region + ':', vol.id)
-
-
-test_simple_ec2_launch()

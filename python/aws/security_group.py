@@ -30,10 +30,10 @@ class SecurityGroup(object):
         self.cluster_name = cluster_name
 
         # Creates master and slave security group name
-        self.__master_group = self.make_and_get_group(get_master_group_name(cluster_name),
-                                                      is_override)
-        self.__slave_group = self.make_and_get_group(get_slave_group_name(cluster_name),
-                                                     is_override)
+        self.__master_group = self.__make_and_get_group(get_master_group_name(cluster_name),
+                                                        is_override)
+        self.__slave_group = self.__make_and_get_group(get_slave_group_name(cluster_name),
+                                                       is_override)
 
     def get_master_group(self):
         """
@@ -49,9 +49,9 @@ class SecurityGroup(object):
         """
         return self.__slave_group
 
-    def make_and_get_group(self, name,
-                           override_existing=True,
-                           description="Spark EC2 group"):
+    def __make_and_get_group(self, name,
+                             override_existing=True,
+                             description="Spark EC2 group"):
         """
         Get the EC2 security group of the given name, creates it, if it doesn't exist
         Example: ec2.connect_to_region

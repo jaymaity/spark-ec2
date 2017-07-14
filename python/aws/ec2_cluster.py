@@ -12,7 +12,171 @@ import python.aws.common as aws_common
 from boto.ec2.blockdevicemapping import BlockDeviceMapping, BlockDeviceType, EBSBlockDeviceType
 
 
-class EC2Launch(object):
+def get_instances_by_groupnames(conn, sec_group_names):
+    """
+    Get all non-terminated instances that belong to any of the provided security groups.
+    EC2 reservation filters and instance states are documented here:
+        http://docs.aws.amazon.com/cli/latest/reference/ec2/describe-instances.html#options
+    """
+    reservations = conn.get_all_reservations(
+        filters={"instance.group-name": sec_group_names})
+    instances = itertools.chain.from_iterable(r.instances for r in reservations)
+    return [i for i in instances if i.state not in ["shutting-down", "terminated"]]
+
+
+def get_existing_cluster(conn, cluster_name, die_on_error=True):
+    """
+    Get the EC2 instances in an existing cluster if available.
+    Returns a tuple of lists of EC2 instance objects for the masters and slaves.
+    """
+
+    region = conn.region.name
+    print("Searching for existing cluster {c} in region {r}...".format(
+        c=cluster_name, r=region))
+
+    master_instances = get_instances_by_groupnames(
+        conn,
+        [sg_grp.get_master_group_name(cluster_name)])
+    slave_instances = get_instances_by_groupnames(
+        conn,
+        [sg_grp.get_slave_group_name(cluster_name)])
+
+    if any((master_instances, slave_instances)):
+        print("Found {m} master{plural_m}, {s} slave{plural_s}.".format(
+            m=len(master_instances),
+            plural_m=('' if len(master_instances) == 1 else 's'),
+            s=len(slave_instances),
+            plural_s=('' if len(slave_instances) == 1 else 's')))
+
+    if not master_instances and die_on_error:
+        print("ERROR: Could not find a master for cluster {c} in region {r}.".format(
+            c=cluster_name, r=region), file=sys.stderr)
+        sys.exit(1)
+
+    return master_instances, slave_instances
+
+
+def launch(conn, opts, cluster_name, master_group,
+           slave_group, additional_group_ids=None,
+           time_wait_to_propagate=15):
+    """
+    Launch cluster instances in ec2
+    :param conn:
+    :param opts:
+    :param cluster_name:
+    :param master_group:
+    :param slave_group:
+    :param additional_group_ids:
+    :param time_wait_to_propagate:
+    :return:
+    """
+    launch_ins = LaunchInstances(conn, opts, master_group, slave_group,
+                                 additional_group_ids, cluster_name)
+    return launch_ins.launch_instances(time_wait_to_propagate)
+
+
+def __execute_inst_operation(action, inst):
+    """
+    Does EC2 operations based on input
+    :param action:
+    :param inst:
+    :return:
+    """
+    if inst.state not in ["shutting-down", "terminated"]:
+        if action == "start":
+            inst.start()
+        elif action == "stop":
+            inst.stop()
+        elif action == "reboot":
+            inst.reboot()
+        elif action == "destroy":
+            inst.terminate()
+        else:
+            raise Exception("Unknown action on ec2 instances")
+    else:
+        raise Exception("Cannot take action as it is shutting-down or terminated")
+
+
+def __execute_ops_on_cluster(conn, action, cluster_name,
+                             action_on_masters=True, action_on_slaves=True):
+    """
+    Execute desired operation on cluster
+    :param conn:
+    :param action:
+    :param cluster_name:
+    :param action_on_masters:
+    :param action_on_slaves:
+    :return:
+    """
+    master_nodes, slave_nodes = get_existing_cluster(conn, cluster_name)
+    print(action + "ing master...")
+    if action_on_masters:
+        for inst in master_nodes:
+            __execute_inst_operation(action, inst)
+
+    print(action + "ing slaves...")
+    if action_on_slaves:
+        for inst in slave_nodes:
+            __execute_inst_operation(action, inst)
+
+
+def destroy(conn, cluster_name,
+            action_on_masters=True, action_on_slaves=True):
+    """
+    Destroy all instances
+    :param conn:
+    :param cluster_name:
+    :param action_on_masters:
+    :param action_on_slaves:
+    :return:
+    """
+    __execute_ops_on_cluster(conn, "destroy", cluster_name,
+                             action_on_masters, action_on_slaves)
+
+
+def stop(conn, cluster_name,
+            action_on_masters=True, action_on_slaves=True):
+    """
+    Stop all instances
+    :param conn:
+    :param cluster_name:
+    :param action_on_masters:
+    :param action_on_slaves:
+    :return:
+    """
+    __execute_ops_on_cluster(conn, "stop", cluster_name,
+                             action_on_masters, action_on_slaves)
+
+
+def start(conn, cluster_name,
+          action_on_masters=True, action_on_slaves=True):
+    """
+    start all instances
+    :param conn:
+    :param cluster_name:
+    :param action_on_masters:
+    :param action_on_slaves:
+    :return:
+    """
+    __execute_ops_on_cluster(conn, "start", cluster_name,
+                             action_on_masters, action_on_slaves)
+
+
+def reboot(conn, cluster_name,
+          action_on_masters=True, action_on_slaves=True):
+    """
+    Reboot all instances
+    :param conn:
+    :param cluster_name:
+    :param action_on_masters:
+    :param action_on_slaves:
+    :return:
+    """
+    __execute_ops_on_cluster(conn, "reboot", cluster_name,
+                             action_on_masters, action_on_slaves)
+
+
+class LaunchInstances(object):
     """
     Responsible for launching EC2 instances
     """
@@ -233,7 +397,7 @@ class EC2Launch(object):
         :return:
         """
         # TODO: Activate with real app
-        existing_masters, existing_slaves = None, None # self.__get_existing_cluster(die_on_error=False)
+        existing_masters, existing_slaves = None, None  # self.__get_existing_cluster(die_on_error=False)
         image = self.__get_image_from_ami(self.opts.ami)
         if existing_masters:
             print("Starting master...")
@@ -280,12 +444,12 @@ class EC2Launch(object):
             ec2_instance.add_tags(
                 dict(additional_tags, Name='{cn}-master-{iid}'.format(cn=self.cluster_name, iid=ec2_instance.id))
             )
-        # for slave in self.slave_nodes:
-        #     slave.add_tags(
-        #         dict(additional_tags, Name='{cn}-slave-{iid}'.format(cn=self.cluster_name, iid=slave.id))
-        #     )
+            # for slave in self.slave_nodes:
+            #     slave.add_tags(
+            #         dict(additional_tags, Name='{cn}-slave-{iid}'.format(cn=self.cluster_name, iid=slave.id))
+            #     )
 
-    def launch_instances(self):
+    def launch_instances(self, time_wait_propagate=15):
         """
         Launch all instances (master and Slaves)
         :return:
@@ -297,8 +461,8 @@ class EC2Launch(object):
         master_nodes = self.__launch_or_resume_masters()
         # This wait time corresponds to SPARK-4983
         print("Waiting for AWS to propagate instance metadata...")
-        time.sleep(15)
+        time.sleep(time_wait_propagate)
 
-        self.__add_tag_to_instances(master_nodes+slave_nodes)
+        self.__add_tag_to_instances(master_nodes + slave_nodes)
 
         return master_nodes, slave_nodes
