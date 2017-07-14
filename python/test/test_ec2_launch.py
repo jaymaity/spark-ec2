@@ -197,7 +197,7 @@ def test_simple_ec2_launch():
 
     sec_group = sg.SecurityGroup(conn, modules, opts, cluster_name)
     master_group, slave_group, additional_group_ids = \
-        sec_group.create_apply_security_group_rules()
+        sec_group.create_security_group()
 
     # connimg = boto.connect_ec2('us-east-1')
     reservation = conn.run_instances('ami-1234abcd')

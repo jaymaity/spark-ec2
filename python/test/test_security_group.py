@@ -29,7 +29,7 @@ def test_security_group_no_group_exists():
 
     sec_group = sg.SecurityGroup(conn, modules, opts, cluster_name)
     master_group, slave_group, additional_group_ids = \
-        sec_group.create_apply_security_group_rules()
+        sec_group.create_security_group()
 
     # TODO: Write proper test cases
     group1 = conn.get_all_security_groups([master_group.name, slave_group.name])
