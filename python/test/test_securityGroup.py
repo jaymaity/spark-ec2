@@ -18,7 +18,7 @@ class Opt:
 REGION = 'us-east-1'
 CONNEC2 = ec2.connect_to_region(REGION)
 MODULES = ['ssh', 'spark', 'ephemeral-hdfs', 'persistent-hdfs',
-                   'mapreduce', 'spark-standalone', 'tachyon']
+            'mapreduce', 'spark-standalone', 'tachyon']
 OPTS = Opt()
 OPTS.region = REGION
 OPTS.vpc_id = None
@@ -28,24 +28,6 @@ OPTS.authorized_address = "0.0.0.0/0"
 
 
 class TestSecurityGroup(TestCase):
-
-    @mock_ec2
-    def test_get_master_slave_group_not_exists(self):
-        """
-        Test getting master and slave group when it does not exists previously
-        """
-        cluster_name = str(uuid.uuid4())
-
-        # Creates the security group
-        sec_group = sg.SecurityGroup(CONNEC2, MODULES, OPTS, cluster_name)
-        sec_group.create_security_group()
-        master_group = sec_group.get_master_group()
-        slave_group = sec_group.get_slave_group()
-
-        is_rule_passed = TestSecurityGroup.is_all_rule_exists(REGION, master_group.name,
-                                                              slave_group.name, MODULES,
-                                                              is_delete_groups=True)
-        self.assertEquals(is_rule_passed, True)
 
     @staticmethod
     def is_security_rule_exists(protocol, port_from, port_to, security_group):
@@ -173,14 +155,12 @@ class TestSecurityGroup(TestCase):
             json_inter_conn["slave"], slave_group, master_group.name, slave_group.name)
 
         if is_delete_groups:
-            conn.delete_security_group(master_group.name, master_group.id)
-            conn.delete_security_group(slave_group.name, slave_group.id)
+            sg.destroy()
 
         if is_master_rule_exists and is_master_interconn_exists \
                 and is_slave_rule_exists and is_slave_interconn_exists:
             return True
 
-    @mock_ec2
     def test_new_security_group(self):
         """
         Test creation of brand new security group
@@ -190,15 +170,28 @@ class TestSecurityGroup(TestCase):
         cluster_name = str(uuid.uuid4())
 
         # Creates the security group
-        sec_group = sg.SecurityGroup(CONNEC2, MODULES, OPTS, cluster_name)
-        master_group, slave_group, additional_group_ids = \
-            sec_group.create_security_group()
+        master_group, slave_group, additional_group_ids = sg.create(CONNEC2, MODULES, OPTS, cluster_name)
 
         # Check all the security rules: if it exists in recently
         # created group for the modules selected from the json files
         all_rules_in_secgroup = TestSecurityGroup.is_all_rule_exists(REGION, master_group.name, slave_group.name, MODULES)
 
         self.assertEqual(all_rules_in_secgroup, True)
+
+
+
+    def test_get_master_slave_group_not_exists(self):
+        """
+        Test getting master and slave group when it does not exists previously
+        """
+        cluster_name = str(uuid.uuid4())
+
+        # Creates the security group
+        master_group, slave_group, additional_group_ids = sg.create(CONNEC2, MODULES, OPTS, cluster_name)
+        is_rule_passed = TestSecurityGroup.is_all_rule_exists(REGION, master_group.name,
+                                                              slave_group.name, MODULES,
+                                                              is_delete_groups=True)
+        self.assertEquals(is_rule_passed, True)
 
     def test_existing_security_group_override(self):
         """
@@ -209,9 +202,7 @@ class TestSecurityGroup(TestCase):
 
         # Creates the security group with less modules
         modules = ['ssh', 'spark', 'ephemeral-hdfs']
-        sec_group = sg.SecurityGroup(CONNEC2, modules, OPTS, cluster_name)
-        master_group, slave_group, additional_group_ids = \
-            sec_group.create_security_group()
+        master_group, slave_group, additional_group_ids = sg.create(CONNEC2, MODULES, OPTS, cluster_name)
 
         # Test if the group is created for the first time
         all_rules_in_secgroup = TestSecurityGroup. \
@@ -223,9 +214,8 @@ class TestSecurityGroup(TestCase):
                    'mapreduce', 'spark-standalone', 'tachyon']
         # Creates the group for the second time with more modules
         # So that more rules can be added
-        sec_group = sg.SecurityGroup(CONNEC2, modules, OPTS, cluster_name, is_override=True)
-        master_group, slave_group, additional_group_ids = \
-            sec_group.create_security_group()
+        master_group, slave_group, additional_group_ids = sg.create(CONNEC2, MODULES, OPTS, cluster_name,
+                                                                    is_override=True)
 
         all_rules_in_secgroup = TestSecurityGroup. \
             is_all_rule_exists(REGION, master_group.name, slave_group.name, modules)
@@ -241,9 +231,7 @@ class TestSecurityGroup(TestCase):
 
         # Creates the security group with less modules
         modules = ['ssh', 'spark', 'ephemeral-hdfs']
-        sec_group = sg.SecurityGroup(CONNEC2, modules, OPTS, cluster_name)
-        master_group, slave_group, additional_group_ids = \
-            sec_group.create_security_group()
+        master_group, slave_group, additional_group_ids = sg.create(CONNEC2, MODULES, OPTS, cluster_name)
 
         # Test if the group is created for the first time
         all_rules_in_secgroup = TestSecurityGroup.\
@@ -257,8 +245,8 @@ class TestSecurityGroup(TestCase):
         with self.assertRaises(Exception) as context:
             # Creates the group for the second time with more modules
             # So that more rules can be added
-            sec_group = sg.SecurityGroup(CONNEC2, modules, OPTS, cluster_name, is_override=False)
-            sec_group.create_security_group()
+            master_group, slave_group, additional_group_ids = sg.create(CONNEC2, MODULES, OPTS, cluster_name,
+                                                                        is_override=False)
 
         # Deletes all security groups
         CONNEC2.delete_security_group(master_group.name, master_group.id)

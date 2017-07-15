@@ -4,12 +4,71 @@ from sys import stderr
 import json
 
 
-def get_master_group_name(cluster_name):
+def get_master_name(cluster_name):
     return cluster_name + "-master"
 
 
-def get_slave_group_name(cluster_name):
+def get_slave_name(cluster_name):
     return cluster_name + "-slave"
+
+
+def create(conn, modules, opts, cluster_name, is_override=False,
+           existing_master=None, existing_slaves=None,
+           inter_security_rules="../../config/security_group/interconn-masterslave.json"
+           ):
+    """
+    Creates security group for the cluster
+    :param conn:
+    :param modules:
+    :param opts:
+    :param cluster_name:
+    :param is_override:
+    :param existing_master:
+    :param existing_slaves:
+    :param inter_security_rules:
+    :return:
+    """
+    sg_grp = SecurityGroup(conn, modules, opts, cluster_name, is_override)
+    return sg_grp.create_security_group(existing_master, existing_slaves, inter_security_rules)
+
+
+def __remove_all_rules(group):
+    """
+    Remove all rules from a group
+    :param group:
+    :return:
+    """
+    success = True
+    for rule in group.rules:
+        for grant in rule.grants:
+            success &= group.revoke(ip_protocol=rule.ip_protocol,
+                                    from_port=rule.from_port,
+                                    to_port=rule.to_port,
+                                    src_group=grant)
+    return success
+
+
+def destroy(conn, cluster_name):
+    """
+    Destroy security groups for the cluster
+    :param conn:
+    :param cluster_name:
+    :return:
+    """
+    # Get Security group by querying
+    master_group = conn.get_all_security_groups(
+        [get_master_name(cluster_name)])[0]
+    slave_group = conn.get_all_security_groups(
+        [get_slave_name(cluster_name)])[0]
+
+    __remove_all_rules(master_group)
+    __remove_all_rules(slave_group)
+    import time
+    time.sleep(30)
+    conn.delete_security_group(master_group.name, master_group.id)
+    conn.delete_security_group(slave_group.name, slave_group.id)
+
+
 
 
 class SecurityGroup(object):
@@ -30,9 +89,9 @@ class SecurityGroup(object):
         self.cluster_name = cluster_name
 
         # Creates master and slave security group name
-        self.__master_group = self.__make_and_get_group(get_master_group_name(cluster_name),
+        self.__master_group = self.__make_and_get_group(get_master_name(cluster_name),
                                                         is_override)
-        self.__slave_group = self.__make_and_get_group(get_slave_group_name(cluster_name),
+        self.__slave_group = self.__make_and_get_group(get_slave_name(cluster_name),
                                                        is_override)
 
     def get_master_group(self):

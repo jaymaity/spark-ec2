@@ -36,10 +36,10 @@ def get_existing_cluster(conn, cluster_name, die_on_error=True):
 
     master_instances = get_instances_by_groupnames(
         conn,
-        [sg_grp.get_master_group_name(cluster_name)])
+        [sg_grp.get_master_name(cluster_name)])
     slave_instances = get_instances_by_groupnames(
         conn,
-        [sg_grp.get_slave_group_name(cluster_name)])
+        [sg_grp.get_slave_name(cluster_name)])
 
     if any((master_instances, slave_instances)):
         print("Found {m} master{plural_m}, {s} slave{plural_s}.".format(
@@ -374,8 +374,8 @@ class LaunchInstances(object):
             instances = itertools.chain.from_iterable(r.instances for r in reservations)
             return [i for i in instances if i.state not in ["shutting-down", "terminated"]]
 
-        master_instances = get_instances([sg_grp.get_master_group_name(self.cluster_name)])
-        slave_instances = get_instances([sg_grp.get_slave_group_name(self.cluster_name)])
+        master_instances = get_instances([sg_grp.get_master_name(self.cluster_name)])
+        slave_instances = get_instances([sg_grp.get_slave_name(self.cluster_name)])
 
         if any((master_instances, slave_instances)):
             print("Found {m} master{plural_m}, {s} slave{plural_s}.".format(
