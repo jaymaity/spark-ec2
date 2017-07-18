@@ -5,6 +5,8 @@ import python.aws.security_group as sg
 import uuid
 import python.aws.ec2_cluster as ec2launch
 from optparse import OptionParser
+import time
+import os
 
 parser = OptionParser(
     prog="spark-ec2",
@@ -168,6 +170,10 @@ parser.add_option(
 (opts, args) = parser.parse_args()
 
 
+AWS_ACCESS_KEY_ID = "AKIAIDXXLE77ARJFO4CQ" # os.environ.get("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = "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" # os.environ.get("AWS_SECRET_ACCESS_KEY")
+
+
 class TestEC2Launch(TestCase):
     def test_simple_ec2_launch(self):
         opts.region = 'us-east-1'
@@ -178,15 +184,17 @@ class TestEC2Launch(TestCase):
         opts.ami = "ami-a4c7edb2"
         opts.slaves = 1
 
-        conn = ec2.connect_to_region(opts.region)
+        conn = ec2.connect_to_region(opts.region, aws_access_key_id=AWS_ACCESS_KEY_ID,
+                                     aws_secret_access_key=AWS_SECRET_ACCESS_KEY)
         modules = ['ssh', 'spark', 'ephemeral-hdfs', 'persistent-hdfs',
                    'mapreduce', 'spark-standalone', 'tachyon']
 
         cluster_name = str(uuid.uuid4())
 
-        sec_group = sg.SecurityGroup(conn, modules, opts, cluster_name)
-        master_group, slave_group, additional_group_ids = \
-            sec_group.create_security_group()
+        master_group, slave_group, additional_group_ids = sg.create(conn,
+                                                                    modules,
+                                                                    opts,
+                                                                    cluster_name)
 
         # # Creation of test image
         # reservation = conn.run_instances(opts.ami)
@@ -200,24 +208,43 @@ class TestEC2Launch(TestCase):
         ec2launch.launch(conn, opts, cluster_name, master_group, slave_group,
                          additional_group_ids, time_wait_to_propagate=15)
 
-        # Check if same no of slaves launched or not
-        # TODO: Write proper test cases
-        # It seems security group is not associated with mock
-        # Needs more investigation
-        reservations = conn.get_all_reservations()
-        for reservation in reservations:
-            print(opts.region + ':', reservation)
+        is_running = self.check_status(cluster_name, conn, "running")
+        if is_running:
+            ec2launch.stop(conn, cluster_name)
+            is_stopped = self.check_status(cluster_name, conn, "stopped")
+            self.assertTrue(is_stopped)
 
-        for vol in conn.get_all_volumes():
-            print(opts.region + ':', vol.id)
-        import time
-        time.sleep(300)
-        ec2launch.stop(conn, cluster_name)
-        time.sleep(300)
-        ec2launch.start(conn, cluster_name)
-        time.sleep(300)
-        ec2launch.reboot(conn, cluster_name)
-        time.sleep(300)
-        ec2launch.destroy(conn, cluster_name)
+            ec2launch.start(conn, cluster_name)
+            is_running = self.check_status(cluster_name, conn, "running")
+            self.assertTrue(is_running)
+
+            ec2launch.reboot(conn, cluster_name)
+            time.sleep(10)
+            is_running = self.check_status(cluster_name, conn, "running")
+            self.assertTrue(is_running)
+
+            ec2launch.destroy(conn, cluster_name)
+            is_destroyed = self.check_status(cluster_name, conn, None)
+            self.assertTrue(is_destroyed)
+            sg.destroy(conn, cluster_name)
+        else:
+            self.assertTrue(False)
+            sg.destroy()
+
+    def check_status(self, cluster_name, conn, status, max_time=600, interval=10):
+        """
+        Check status in interval
+        :param cluster_name:
+        :param conn:
+        :param status:
+        :return:
+        """
+        counter = 0
+        while max_time > counter:
+            counter += interval
+            time.sleep(interval)
+            if ec2launch.get_state(conn, cluster_name) == status:
+                return True
+        return False
 
 

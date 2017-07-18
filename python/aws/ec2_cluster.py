@@ -1,14 +1,14 @@
+"""Manages EC2 Instances for cluster"""
 from __future__ import division, print_function, with_statement
 import itertools
 import random
 import string
 import sys
-import time
 from sys import stderr
+import time
 import python.aws.security_group as sg_grp
 import python.aws.config as aws_config
 import python.aws.common as aws_common
-
 from boto.ec2.blockdevicemapping import BlockDeviceMapping, BlockDeviceType, EBSBlockDeviceType
 
 
@@ -120,6 +120,51 @@ def __execute_ops_on_cluster(conn, action, cluster_name,
             __execute_inst_operation(action, inst)
 
 
+def __get_ec2_states(group_nodes):
+    """
+    Get single state for all the group
+    if it is mixed, it will return the string "mixed"
+    :param group_nodes:
+    :return:
+    """
+    ec2_status = None
+    for inst in group_nodes:
+        if inst.state == ec2_status or ec2_status is None:
+            ec2_status = inst.state
+        else:
+            return "mixed"
+    return ec2_status
+
+
+def get_state(conn, cluster_name, group_type="both"):
+    """
+    Get State of all instances
+    This will return 8 possible string
+    rebooting, pending, running, shutting-down, terminated,
+    stopping, stopped and mixed
+    :param conn:
+    :param cluster_name:
+    :param group_type:
+    :return:
+    """
+    master_nodes, slave_nodes = get_existing_cluster(conn, cluster_name, False)
+
+    master_state = None
+    slave_state = None
+
+    if group_type == "both" or group_type == "master":
+        master_state = __get_ec2_states(master_nodes)
+
+    if group_type == "both" or group_type == "slave":
+        slave_state = __get_ec2_states(slave_nodes)
+
+    if group_type == "both" and slave_state == master_state \
+            and slave_state != "mixed" and master_state != "mixed":
+        return slave_state
+    else:
+        return "mixed"
+
+
 def destroy(conn, cluster_name,
             action_on_masters=True, action_on_slaves=True):
     """
@@ -135,7 +180,7 @@ def destroy(conn, cluster_name,
 
 
 def stop(conn, cluster_name,
-            action_on_masters=True, action_on_slaves=True):
+         action_on_masters=True, action_on_slaves=True):
     """
     Stop all instances
     :param conn:
@@ -163,7 +208,7 @@ def start(conn, cluster_name,
 
 
 def reboot(conn, cluster_name,
-          action_on_masters=True, action_on_slaves=True):
+           action_on_masters=True, action_on_slaves=True):
     """
     Reboot all instances
     :param conn:
@@ -298,7 +343,8 @@ class LaunchInstances(object):
             print("Canceling spot instance requests")
             self.conn.cancel_spot_instance_requests(my_req_ids)
             # Log a warning if any of these requests actually launched instances:
-            (master_nodes, slave_nodes) = self.__get_existing_cluster(die_on_error=False)
+            (master_nodes, slave_nodes) = get_existing_cluster(
+                self.conn, self.cluster_name, die_on_error=False)
             running = len(master_nodes) + len(slave_nodes)
             if running:
                 print(("WARNING: %d instances are still running" % running), file=stderr)
@@ -329,7 +375,8 @@ class LaunchInstances(object):
                     subnet_id=self.opts.subnet_id,
                     placement_group=self.opts.placement_group,
                     user_data=self.__user_data,
-                    instance_initiated_shutdown_behavior=self.opts.instance_initiated_shutdown_behavior,
+                    instance_initiated_shutdown_behavior=
+                    self.opts.instance_initiated_shutdown_behavior,
                     instance_profile_name=self.opts.instance_profile_name)
                 slave_nodes += slave_res.instances
                 print("Launched {s} slave{plural_s} in {z}, regid = {r}".format(
@@ -354,50 +401,12 @@ class LaunchInstances(object):
 
         return slave_nodes, zone
 
-    def __get_existing_cluster(self, die_on_error=True):
-        """
-        Get the EC2 instances in an existing cluster if available.
-        Returns a tuple of lists of EC2 instance objects for the masters and slaves.
-        """
-        print("Searching for existing cluster {c} in region {r}...".format(
-            c=self.cluster_name, r=self.opts.region))
-
-        def get_instances(group_names):
-            """
-            Get all non-terminated instances that belong to any of the provided security groups.
-
-            EC2 reservation filters and instance states are documented here:
-            http://docs.aws.amazon.com/cli/latest/reference/ec2/describe-instances.html#options
-            """
-            reservations = self.conn.get_all_reservations(
-                filters={"instance.group-name": group_names})
-            instances = itertools.chain.from_iterable(r.instances for r in reservations)
-            return [i for i in instances if i.state not in ["shutting-down", "terminated"]]
-
-        master_instances = get_instances([sg_grp.get_master_name(self.cluster_name)])
-        slave_instances = get_instances([sg_grp.get_slave_name(self.cluster_name)])
-
-        if any((master_instances, slave_instances)):
-            print("Found {m} master{plural_m}, {s} slave{plural_s}.".format(
-                m=len(master_instances),
-                plural_m=('' if len(master_instances) == 1 else 's'),
-                s=len(slave_instances),
-                plural_s=('' if len(slave_instances) == 1 else 's')))
-
-        if not master_instances and die_on_error:
-            print("ERROR: Could not find a master for cluster {c} in region {r}.".format(
-                c=self.cluster_name, r=self.opts.region), file=sys.stderr)
-            sys.exit(1)
-
-        return master_instances, slave_instances
-
     def __launch_or_resume_masters(self):
         """
         Launch or resume master instances
-        :return:
         """
-        # TODO: Activate with real app
-        existing_masters, existing_slaves = None, None  # self.__get_existing_cluster(die_on_error=False)
+        existing_masters, existing_slaves = get_existing_cluster(
+            self.conn, self.cluster_name, die_on_error=False)
         image = self.__get_image_from_ami(self.opts.ami)
         if existing_masters:
             print("Starting master...")
@@ -442,12 +451,9 @@ class LaunchInstances(object):
             )
         for ec2_instance in all_instances:
             ec2_instance.add_tags(
-                dict(additional_tags, Name='{cn}-master-{iid}'.format(cn=self.cluster_name, iid=ec2_instance.id))
+                dict(additional_tags, Name='{cn}-master-{iid}'.
+                     format(cn=self.cluster_name, iid=ec2_instance.id))
             )
-            # for slave in self.slave_nodes:
-            #     slave.add_tags(
-            #         dict(additional_tags, Name='{cn}-slave-{iid}'.format(cn=self.cluster_name, iid=slave.id))
-            #     )
 
     def launch_instances(self, time_wait_propagate=15):
         """

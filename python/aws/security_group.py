@@ -1,21 +1,32 @@
+""" Handles security group for a cluster"""
 from __future__ import division, print_function, with_statement
+import time
 import sys
 from sys import stderr
 import json
 
 
 def get_master_name(cluster_name):
+    """
+    Name of the master cluster group
+    :param cluster_name: Name of the cluster we want to define
+    :return: String for the master cluster's security group
+    """
     return cluster_name + "-master"
 
 
 def get_slave_name(cluster_name):
+    """
+    Name of the slave cluster group
+    :param cluster_name: Name of the cluster we want to define
+    :return: String for the slaves cluster's security group
+    """
     return cluster_name + "-slave"
 
 
 def create(conn, modules, opts, cluster_name, is_override=False,
            existing_master=None, existing_slaves=None,
-           inter_security_rules="../../config/security_group/interconn-masterslave.json"
-           ):
+           inter_security_rules="../../config/security_group/interconn-masterslave.json"):
     """
     Creates security group for the cluster
     :param conn:
@@ -32,15 +43,16 @@ def create(conn, modules, opts, cluster_name, is_override=False,
     return sg_grp.create_security_group(existing_master, existing_slaves, inter_security_rules)
 
 
-def __remove_all_rules(group):
+def __remove_all_group_linked_rules(group):
     """
-    Remove all rules from a group
+    Remove all interconnected rules from a group
     :param group:
     :return:
     """
     success = True
     for rule in group.rules:
-        for grant in rule.grants:
+        grants = list(rule.grants)
+        for grant in grants:
             success &= group.revoke(ip_protocol=rule.ip_protocol,
                                     from_port=rule.from_port,
                                     to_port=rule.to_port,
@@ -48,12 +60,33 @@ def __remove_all_rules(group):
     return success
 
 
-def destroy(conn, cluster_name):
+def __is_intergroup_rule_exists(conn, security_group_id):
+    """
+    Check if security rules among security groups exists or not
+    :param security_group_id: Security group object to test
+    :param conn: Connection object to EC2
+    connection between them
+    :return: Boolean
+    """
+    sec_group = conn.get_all_security_groups(group_ids=[security_group_id])[0]
+    if sec_group:
+        for rule in sec_group.rules:
+            if len(rule.grants) > 0:
+                for grant in rule.grants:
+                    if grant.group_id:
+                        return True
+        return False
+
+
+def destroy(conn, cluster_name, total_wait=60, interval=3):
     """
     Destroy security groups for the cluster
-    :param conn:
-    :param cluster_name:
-    :return:
+    :param conn: Connection object to EC2
+    :param cluster_name: Name of the cluster
+    :param total_wait: Total no of seconds it has to wait
+    :param interval: Checking interval for the propagation of
+    deletion of individual rules
+    :return: True if deletion was successful
     """
     # Get Security group by querying
     master_group = conn.get_all_security_groups(
@@ -61,14 +94,27 @@ def destroy(conn, cluster_name):
     slave_group = conn.get_all_security_groups(
         [get_slave_name(cluster_name)])[0]
 
-    __remove_all_rules(master_group)
-    __remove_all_rules(slave_group)
-    import time
-    time.sleep(30)
-    conn.delete_security_group(master_group.name, master_group.id)
-    conn.delete_security_group(slave_group.name, slave_group.id)
+    # Remove all interconnected rules from security group
+    # between master and slave security group
+    # We have to remove interconnection, otherwise security group cannot be removed
+    __remove_all_group_linked_rules(master_group)
+    __remove_all_group_linked_rules(slave_group)
 
+    # Retries for total_wait number of seconds
+    current_wait = 0
+    while total_wait > current_wait:
+        # Check if delete command has been propagated
+        if not __is_intergroup_rule_exists(conn, master_group.id) and \
+                not __is_intergroup_rule_exists(conn, slave_group.id):
+            conn.delete_security_group(master_group.name, master_group.id)
+            conn.delete_security_group(slave_group.name, slave_group.id)
+            return True
+        else:
+            # Keeping track of time by this way might not be accurate
+            current_wait += interval
+            time.sleep(interval)
 
+    raise Exception("We couldn't able to delete the groups in time.")
 
 
 class SecurityGroup(object):
@@ -93,20 +139,6 @@ class SecurityGroup(object):
                                                         is_override)
         self.__slave_group = self.__make_and_get_group(get_slave_name(cluster_name),
                                                        is_override)
-
-    def get_master_group(self):
-        """
-        Get master group object
-        :return:
-        """
-        return self.__master_group
-
-    def get_slave_group(self):
-        """
-        Get Slave group object
-        :return:
-        """
-        return self.__slave_group
 
     def __make_and_get_group(self, name,
                              override_existing=True,
@@ -216,7 +248,8 @@ class SecurityGroup(object):
 
     def create_security_group(self, existing_masters=None,
                               existing_slaves=None,
-                              inter_security_rules="../../config/security_group/interconn-masterslave.json"):
+                              inter_security_rules=
+                              "../../config/security_group/interconn-masterslave.json"):
         """
         Creates and apply security groups
         :param existing_masters:

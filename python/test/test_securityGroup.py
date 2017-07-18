@@ -4,7 +4,7 @@ from moto import mock_ec2
 import python.aws.security_group as sg
 import uuid
 import json
-
+import os
 
 # Creates opt class
 class Opt:
@@ -14,9 +14,14 @@ class Opt:
     additional_security_group = False
     authorized_address = "0.0.0.0/0"
 
+
+AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
+
 # Configure common parameters for security group options
 REGION = 'us-east-1'
-CONNEC2 = ec2.connect_to_region(REGION)
+CONNEC2 = ec2.connect_to_region(REGION, aws_access_key_id=AWS_ACCESS_KEY_ID,
+                                aws_secret_access_key=AWS_SECRET_ACCESS_KEY)
 MODULES = ['ssh', 'spark', 'ephemeral-hdfs', 'persistent-hdfs',
             'mapreduce', 'spark-standalone', 'tachyon']
 OPTS = Opt()
@@ -33,14 +38,15 @@ class TestSecurityGroup(TestCase):
     def is_security_rule_exists(protocol, port_from, port_to, security_group):
         """
         Checks for a particular security group exists or not
-        :param protocol:
-        :param port_from:
-        :param port_to:
-        :param security_group:
+        :param protocol: Name of the protocol
+        :param port_from: Starting port (in Case of ICMP it could be anything)
+        :param port_to: End port
+        :param security_group: Security group object to test
         :return:
         """
         if security_group:
             for rule in security_group.rules:
+                # If it is ICMP protocol, we do not need to check the ports otherwise we have to
                 if protocol == rule.ip_protocol \
                         and ((port_from == int(rule.from_port) and port_to == int(rule.to_port))
                              or protocol == 'icmp'):
@@ -49,15 +55,16 @@ class TestSecurityGroup(TestCase):
 
     @staticmethod
     def is_inter_security_rule_exists(protocol, port_from, port_to, security_group,
-                                      target_group_name):
+                                      target_group_id):
         """
         Check if security rules among security groups exists or not
-        :param protocol:
-        :param port_from:
-        :param port_to:
-        :param security_group:
-        :param target_group_name:
-        :return:
+        :param protocol: Name of the protocol
+        :param port_from: Starting port (in Case of ICMP it could be anything)
+        :param port_to: End port
+        :param security_group: Security group object to test
+        :param target_group_id: Id of the target security group to check
+        connection between them
+        :return: Boolean
         """
         if security_group:
             for rule in security_group.rules:
@@ -65,7 +72,7 @@ class TestSecurityGroup(TestCase):
                         and ((port_from == int(rule.from_port) and port_to == int(rule.to_port))
                              or protocol == 'icmp'):
                     for auth in rule.grants:
-                        if auth.name == target_group_name:
+                        if auth.group_id == target_group_id:
                             return True
             return False
 
@@ -73,10 +80,10 @@ class TestSecurityGroup(TestCase):
     def is_all_security_rule_exists(json_rules, modules, security_group):
         """
         Checks for all security rules for a module exists or not
-        :param json_rules:
-        :param modules:
-        :param security_group:
-        :return:
+        :param json_rules: JSON rules from the files
+        :param modules: Name of the modules to check the security rules for
+        :param security_group: Security group object to check
+        :return: Boolean
         """
         # Test for master security group rules
         for security_row in json_rules:
@@ -93,14 +100,14 @@ class TestSecurityGroup(TestCase):
         return True
 
     @staticmethod
-    def is_inter_conn_rule_exists(json_rules, security_group, master_group_name, slave_group_name):
+    def is_inter_conn_rule_exists(json_rules, security_group, master_group_id, slave_group_id):
         """
         Check all security rule for inter conn module exists or not
-        :param json_rules:
-        :param security_group:
-        :param master_group_name:
-        :param slave_group_name:
-        :return:
+        :param json_rules: JSON rule from inter con file
+        :param security_group: Security group object to check
+        :param master_group_id: Id of the master group to check
+        :param slave_group_id: Id of the slave group to check
+        :return: boolean value based on rule exists or not
         """
         # Test for master security group rules
         for security_row in json_rules:
@@ -109,29 +116,31 @@ class TestSecurityGroup(TestCase):
             port_to = security_row["to_port"]
             target = security_row["target"]
             if target == "master":
-                target_group_name = master_group_name
+                target_group_id = master_group_id
             elif target == "slave":
-                target_group_name = slave_group_name
+                target_group_id = slave_group_id
 
             is_rule_exists = TestSecurityGroup.\
                 is_inter_security_rule_exists(protocol, port_from, port_to,
-                                              security_group, target_group_name)
+                                              security_group, target_group_id)
             if not is_rule_exists:
                 return False
         return True
 
     @staticmethod
-    def is_all_rule_exists(region, master_group_name, slave_group_name, modules, is_delete_groups=True):
+    def is_all_rule_exists(region, master_group_name, slave_group_name,
+                           modules, cluster_name, is_delete_groups=True):
         """
         Overall check for all security rules for a list of moduless
-        :param region:
-        :param master_group_name:
-        :param slave_group_name:
-        :param modules:
-        :param is_delete_groups:
-        :return:
+        :param region: Name of the region to connect ex:east-us-1
+        :param master_group_name: Name of the master group
+        :param slave_group_name: Name of the slave group
+        :param modules: Name of the modules to check for
+        :param is_delete_groups: Confirmation delete the groups after checking
+        :return: Return True if the rules exist
         """
-        conn = ec2.connect_to_region(region)
+        conn = ec2.connect_to_region(region, aws_access_key_id=AWS_ACCESS_KEY_ID,
+                                     aws_secret_access_key=AWS_SECRET_ACCESS_KEY)
 
         # Get Security group by querying
         master_group = conn.get_all_security_groups([master_group_name])[0]
@@ -149,13 +158,13 @@ class TestSecurityGroup(TestCase):
                                                                              modules,
                                                                              slave_group)
         is_master_interconn_exists = TestSecurityGroup.is_inter_conn_rule_exists(
-            json_inter_conn["master"], master_group, master_group.name, slave_group.name)
+            json_inter_conn["master"], master_group, master_group.id, slave_group.id)
 
         is_slave_interconn_exists = TestSecurityGroup.is_inter_conn_rule_exists(
-            json_inter_conn["slave"], slave_group, master_group.name, slave_group.name)
+            json_inter_conn["slave"], slave_group, master_group.id, slave_group.id)
 
         if is_delete_groups:
-            sg.destroy()
+            sg.destroy(conn, cluster_name)
 
         if is_master_rule_exists and is_master_interconn_exists \
                 and is_slave_rule_exists and is_slave_interconn_exists:
@@ -166,7 +175,6 @@ class TestSecurityGroup(TestCase):
         Test creation of brand new security group
         :return:
         """
-
         cluster_name = str(uuid.uuid4())
 
         # Creates the security group
@@ -174,11 +182,11 @@ class TestSecurityGroup(TestCase):
 
         # Check all the security rules: if it exists in recently
         # created group for the modules selected from the json files
-        all_rules_in_secgroup = TestSecurityGroup.is_all_rule_exists(REGION, master_group.name, slave_group.name, MODULES)
+        all_rules_in_secgroup = TestSecurityGroup.is_all_rule_exists(REGION, master_group.name,
+                                                                     slave_group.name, MODULES,
+                                                                     cluster_name)
 
         self.assertEqual(all_rules_in_secgroup, True)
-
-
 
     def test_get_master_slave_group_not_exists(self):
         """
@@ -190,6 +198,7 @@ class TestSecurityGroup(TestCase):
         master_group, slave_group, additional_group_ids = sg.create(CONNEC2, MODULES, OPTS, cluster_name)
         is_rule_passed = TestSecurityGroup.is_all_rule_exists(REGION, master_group.name,
                                                               slave_group.name, MODULES,
+                                                              cluster_name,
                                                               is_delete_groups=True)
         self.assertEquals(is_rule_passed, True)
 
@@ -206,7 +215,8 @@ class TestSecurityGroup(TestCase):
 
         # Test if the group is created for the first time
         all_rules_in_secgroup = TestSecurityGroup. \
-            is_all_rule_exists(REGION, master_group.name, slave_group.name, modules, False)
+            is_all_rule_exists(REGION, master_group.name, slave_group.name, modules, cluster_name,
+                               False)
         self.assertEqual(all_rules_in_secgroup, True)
 
         # 2nd part of the test with existing security group
@@ -218,7 +228,7 @@ class TestSecurityGroup(TestCase):
                                                                     is_override=True)
 
         all_rules_in_secgroup = TestSecurityGroup. \
-            is_all_rule_exists(REGION, master_group.name, slave_group.name, modules)
+            is_all_rule_exists(REGION, master_group.name, slave_group.name, modules, cluster_name)
         self.assertEqual(all_rules_in_secgroup, True)
 
     def test_existing_security_group_no_override(self):
@@ -235,7 +245,7 @@ class TestSecurityGroup(TestCase):
 
         # Test if the group is created for the first time
         all_rules_in_secgroup = TestSecurityGroup.\
-            is_all_rule_exists(REGION, master_group.name, slave_group.name, modules, False)
+            is_all_rule_exists(REGION, master_group.name, slave_group.name, modules, cluster_name, False)
         self.assertEqual(all_rules_in_secgroup, True)
 
         # 2nd part of the test with existing security group
@@ -245,11 +255,30 @@ class TestSecurityGroup(TestCase):
         with self.assertRaises(Exception) as context:
             # Creates the group for the second time with more modules
             # So that more rules can be added
-            master_group, slave_group, additional_group_ids = sg.create(CONNEC2, MODULES, OPTS, cluster_name,
-                                                                        is_override=False)
+            sg.create(CONNEC2, modules, OPTS, cluster_name, is_override=False)
 
         # Deletes all security groups
-        CONNEC2.delete_security_group(master_group.name, master_group.id)
-        CONNEC2.delete_security_group(slave_group.name, slave_group.id)
+        sg.destroy(CONNEC2, cluster_name)
 
         self.assertTrue(context.exception, "Security Group Exists")
+
+    def test_destroy_existing_sec_group(self):
+        """
+        Create and destroy cluster security group
+        :return:
+        """
+        cluster_name = str(uuid.uuid4())
+
+        # Creates security group to delete
+        sg.create(CONNEC2, MODULES, OPTS, cluster_name)
+
+        with self.assertRaises(Exception) as context:
+            # Wait time is less, so that it will be highly unlikely that it can be destroyed
+            sg.destroy(CONNEC2, cluster_name, total_wait=0)
+
+        # clean up , putting enough time to propagate
+        # Most likely it's going to finish much earlier
+        is_time_delete = sg.destroy(CONNEC2, cluster_name, total_wait=600)
+
+        self.assertTrue(is_time_delete)
+        self.assertTrue(context.exception, "We couldn't able to delete the groups in time.")
